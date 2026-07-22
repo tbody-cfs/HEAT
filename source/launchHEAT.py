@@ -46,36 +46,41 @@ def loadEnviron():
     if runMode == 'docker':
         print("Running in Docker mode")
 
+        # Each external-tool path below honors an environment variable if it is set,
+        # falling back to the historical apt/source-built default. This lets the
+        # spack-based image point these at the spack view / venv (by exporting the
+        # matching ENV in docker/heat.dockerfile) without changing this file, while
+        # the legacy apt-based Dockerfile keeps working via the unchanged defaults.
+
         ### USER ROOT HEATDIR
         #Root HEAT source code directory
-        rootDir = homeDir + '/source/HEAT/source'
+        rootDir = os.getenv('rootDir', homeDir + '/source/HEAT/source')
 
         ### PARAVIEW
-        #Include the location of the paraview binaries if we 
-        #Specifically we need the python libs and pvpython
-        #PVPath = homeDir + '/lib/python3.8/site-packages'
-        #pvpythonCMD = homeDir + '/opt/paraview/bin/pvpython'
-        PVPath = '/usr/lib/python3/dist-packages'
-        pvpythonCMD = '/bin/pvpython'
+        #Include the location of the paraview binaries.
+        #Specifically we need the python libs and pvpython.
+        #In the spack image ParaView is apt-installed and used via pvpython (subprocess),
+        #so pvpythonCMD is the value that matters; PVPath is for optional in-process import.
+        PVPath = os.getenv('PVPath', '/usr/lib/python3/dist-packages')
+        pvpythonCMD = os.getenv('pvpythonCMD', '/bin/pvpython')
 
         ### FREECAD
-        #docker ubuntu repo freecad path
-        FreeCADPath = '/usr/lib/freecad-python3/lib'
-        FreeCADFEMPath = '/lib/freecad/Mod/Fem'
-        #FreeCADPath = '/usr/lib/freecad-daily/lib'
+        #docker ubuntu repo freecad path (spack: /opt/views/view/lib)
+        FreeCADPath = os.getenv('FreeCADPath', '/usr/lib/freecad-python3/lib')
+        FreeCADFEMPath = os.getenv('FreeCADFEMPath', '/lib/freecad/Mod/Fem')
 
         ### ORNL EFIT CLASS
         #default source code location (EFIT class should be here)
-        EFITPath = homeDir + '/source'
+        EFITPath = os.getenv('EFITPath', homeDir + '/source')
 
         ### OPENFOAM
-        #default openFOAM source path
-        OFbashrc = homeDir + '/builds/openfoam/etc/bashrc'
-        #python site packages where PyFoam resides
-        pyFoamPath = '/usr/local/lib/python3.10/dist-packages'
+        #default openFOAM bashrc (spack: <openfoam prefix>/etc/bashrc)
+        OFbashrc = os.getenv('OFbashrc', homeDir + '/builds/openfoam/etc/bashrc')
+        #python site packages where PyFoam resides (spack: venv site-packages)
+        pyFoamPath = os.getenv('pyFoamPath', '/usr/local/lib/python3.10/dist-packages')
 
-        #open3d is now installed via package manager
-        O3Dpath = None
+        #open3d is installed via pip; leave unset unless an explicit path is provided
+        O3Dpath = os.getenv('O3Dpath') or None
 
 
         #local development mode
