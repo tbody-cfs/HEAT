@@ -63,11 +63,19 @@ spack:
     # matplotlib->pillow pins fighting freecad's pyside2.
 
   # Pin the compiler so every node builds with the image's gcc (registered as an
-  # external in the builder Dockerfile via `spack external find gcc`).
+  # external in the builder Dockerfile via `spack external find gcc`). Use the
+  # per-language provider form (spack's recommendation) rather than a blanket
+  # `all: require: "%gcc"`, which warns and can cause spurious concretization errors.
   packages:
-    all:
+    c:
       require:
-        - "%gcc"
+        - gcc
+    cxx:
+      require:
+        - gcc
+    fortran:
+      require:
+        - gcc
 
   concretizer:
     # when_possible (not true): freecad's old py-pyside2 caps py-pip@:23.0 while modern
