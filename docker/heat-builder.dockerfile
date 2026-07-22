@@ -74,21 +74,23 @@ RUN case "$(uname -m)" in \
 # every successfully-built spec is pushed back to whichever caches are configured
 # regardless of the overall result (self-warming). The real install exit code is
 # re-propagated so CI still fails on a broken build.
+# NOTE: use the explicit `spack -e .` env flag on every command. `spack env activate .`
+# does not persist inside a non-interactive RUN (activation is a shell-function effect;
+# here we invoke the spack binary on PATH, so the activation would be lost).
 RUN --mount=type=secret,id=ghcr_token,required=false \
     --mount=type=cache,target=/spack-cache,sharing=locked \
-    spack env activate . && \
-    spack mirror add --unsigned local-cache file:///spack-cache && \
+    spack -e . mirror add --unsigned local-cache file:///spack-cache && \
     if [ -n "${SPACK_OCI_USER}" ] && [ -s /run/secrets/ghcr_token ]; then \
       export SPACK_OCI_TOKEN="$(cat /run/secrets/ghcr_token)" && \
-      spack mirror add --unsigned \
+      spack -e . mirror add --unsigned \
         --oci-username-variable SPACK_OCI_USER \
         --oci-password-variable SPACK_OCI_TOKEN \
         heat-oci "${SPACK_OCI_CACHE}" ; \
     fi && \
-    { spack install ; rc=$? ; \
-      spack buildcache push --unsigned --update-index --without-build-dependencies local-cache || true ; \
-      if spack mirror list | grep -q heat-oci ; then \
-        spack buildcache push --unsigned --update-index --without-build-dependencies heat-oci || true ; \
+    { spack -e . install ; rc=$? ; \
+      spack -e . buildcache push --unsigned --update-index --without-build-dependencies local-cache || true ; \
+      if spack -e . mirror list | grep -q heat-oci ; then \
+        spack -e . buildcache push --unsigned --update-index --without-build-dependencies heat-oci || true ; \
       fi ; \
       exit $rc ; }
 
