@@ -81,8 +81,9 @@ spack:
     # when_possible (not true): freecad's old py-pyside2 caps py-pip@:23.0 while modern
     # py-numpy's build toolchain wants a newer py-pip. py-pip is a BUILD-ONLY tool (never
     # imported at runtime), so letting it fork is harmless. Verified that the RUNTIME-
-    # critical packages stay single-version under when_possible: one python (3.12) and one
-    # py-numpy across the whole env, so HEAT's single interpreter has a consistent ABI.
+    # critical packages stay single-version under when_possible: one python (3.11.15, the
+    # version pinned above) and one py-numpy across the whole env, so HEAT's single
+    # interpreter has a consistent ABI.
     # If a future change forks python or py-numpy, that is a red flag — re-check here.
     unify: when_possible
     targets:
