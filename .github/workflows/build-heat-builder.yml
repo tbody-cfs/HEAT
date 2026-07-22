@@ -1,0 +1,87 @@
+# Build and publish the HEAT spack builder image to ghcr.io, warming the shared
+# spack OCI buildcache as it goes.
+#
+# STATUS: scaffolding for the eventual ghcr-cache pivot. During local development the
+# builder is built with docker/heat-builder.dockerfile using the on-disk local cache
+# mount (no ghcr needed). This workflow is the CI path that (a) publishes the builder
+# image and (b) populates ghcr.io/<owner>/heat-spack-cache so later builds — local or
+# CI — pull prebuilt binaries instead of recompiling.
+#
+# One-time setup before enabling:
+#   * Nothing beyond the default GITHUB_TOKEN: it is used both to log in to ghcr and,
+#     as a BuildKit secret, to authenticate spack's OCI buildcache push.
+#   * The first run is a long cold build (OpenFOAM, FreeCAD, VTK, Elmer, Qt, ...).
+#     ubuntu-latest hosted runners cap at 360 min; use a larger/self-hosted runner if
+#     the cold build exceeds that. Subsequent runs are fast (cache hits).
+#
+# x86_64 only for now (portable target x86_64_v3, set inside the Dockerfile). The
+# aarch64 arch-switch already exists in the Dockerfile; add a linux/arm64 matrix entry
+# on ubuntu-24.04-arm plus a digest-merge step to publish a multi-arch builder later.
+
+name: Build HEAT builder image
+
+on:
+  workflow_dispatch:
+  release:
+    types: [released]
+  schedule:
+    - cron: '23 1 1 * *'   # monthly: refresh the toolchain + cache
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-heat-builder
+  cancel-in-progress: false
+
+env:
+  BUILDER_IMAGE: ghcr.io/${{ github.repository_owner }}/heat-builder
+
+jobs:
+  build-builder:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata (tags/labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.BUILDER_IMAGE }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=edge
+            type=sha
+            type=ref,event=tag
+
+      - name: Provide GITHUB_TOKEN to BuildKit for the spack OCI cache
+        run: echo "${{ secrets.GITHUB_TOKEN }}" > "${RUNNER_TEMP}/ghcr_token"
+
+      - name: Build and push builder (warms the spack OCI cache)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/heat-builder.dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            SPACK_OCI_USER=${{ github.actor }}
+          secret-files: |
+            ghcr_token=${{ runner.temp }}/ghcr_token
+          cache-from: type=gha,scope=heat-builder
+          cache-to: type=gha,mode=max,scope=heat-builder
