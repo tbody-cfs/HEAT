@@ -1,0 +1,6 @@
+# Copied to /root/.spack/config.yaml in the HEAT builder image.
+# Puts every spack-built package under a single tree that the final image copies
+# wholesale (COPY --from=builder /opt/software ...).
+config:
+  install_tree:
+    root: /opt/software

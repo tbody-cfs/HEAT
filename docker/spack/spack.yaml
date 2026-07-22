@@ -1,0 +1,83 @@
+# HEAT spack environment
+# ----------------------
+# Defines the scientific dependency stack that the HEAT builder image installs
+# into /opt/software (see docker/spack/spack_config.yaml) and exposes through the
+# filesystem view at /opt/views/view. The builder image compiles the components
+# that have no spack package (MAFOT, M3DC1/fusion-io, swak4Foam, heatFoam) and the
+# pip-only Python wheels on top of what this environment provides.
+#
+# Portability: concretizer.targets.granularity=generic keeps builds to a portable
+# baseline. The builder Dockerfile ALSO injects a hard per-arch requirement at build
+# time (x86_64_v3 on amd64, aarch64 on arm64) via:
+#   spack -e . config add "packages:all:require:target=<arch>"
+# so binaries pulled from / pushed to the OCI cache stay portable and are not tuned
+# to the exact CI-runner CPU. Do not hard-code the target here.
+spack:
+  specs:
+    # --- toolchain / core numerics ---
+    - cmake
+    - openmpi
+    - hdf5 +mpi +fortran +hl
+    - netcdf-c +mpi
+    - netcdf-fortran
+    - netcdf-cxx4
+    - openblas threads=openmp          # BLAS + LAPACK
+
+    # --- Python interpreter + compiled scientific packages ---
+    # spack owns numpy/scipy/etc so the whole stack shares ONE numpy ABI. This is
+    # what eliminates the numpy 2.x / scipy ABI breakage worked around in the old
+    # apt+pip Dockerfile.
+    # Runtime python is pinned to 3.11: freecad's (old) py-pyside2 caps the python it can
+    # build against, and under unify:when_possible the whole runtime science stack settles
+    # onto this same interpreter (verified: freecad, py-numpy, py-scipy, vtk, py-matplotlib,
+    # py-h5py all link python@3.11.x, single py-numpy). Newer pythons appear only as
+    # build-tool deps (not in the view). Pinning 3.11 keeps ONE python in the copied view.
+    - python@3.11
+    - py-pip
+    - py-setuptools
+    - py-wheel
+    - py-numpy
+    - py-scipy
+    - py-pandas
+    - py-matplotlib
+    - py-h5py +mpi
+    - py-netcdf4
+    - py-mpi4py
+    # NOTE: py-pillow / py-scikit-image / py-scikit-learn / py-trimesh are intentionally
+    # NOT here. Their numpy version pins collide with freecad's py-pyside2 (py-pip cap)
+    # under concretizer.unify:true. They are pure/light packages, so they are installed
+    # in the pip venv (docker/heat.dockerfile) layered on spack's python with
+    # --system-site-packages, where they bind to spack's numpy at runtime.
+
+    # --- heavy scientific applications (maximal spack scope) ---
+    - openfoam@2306                    # ESI / openfoam.com line, matches the current v2306 build
+    - gmsh +opencascade +fltk
+    - vtk +python +opengl2
+    - freecad                          # in spack: HEAT does `import FreeCAD` in-process, so it must
+                                       # be built against this env's python. Pulls py-pyside2 (old),
+                                       # which caps py-pip@:23.0 -> requires unify:when_possible below.
+    - elmerfem +mpi
+    # ParaView is NOT in spack: it is apt-installed in the final image. HEAT uses it via
+    # pvpython (subprocess) / system-python bindings, not in-process, so it need not share
+    # this env's python. Keeping it out avoids its heavy Qt/python build and its
+    # matplotlib->pillow pins fighting freecad's pyside2.
+
+  # Pin the compiler so every node builds with the image's gcc (registered as an
+  # external in the builder Dockerfile via `spack external find gcc`).
+  packages:
+    all:
+      require:
+        - "%gcc"
+
+  concretizer:
+    # when_possible (not true): freecad's old py-pyside2 caps py-pip@:23.0 while modern
+    # py-numpy's build toolchain wants a newer py-pip. py-pip is a BUILD-ONLY tool (never
+    # imported at runtime), so letting it fork is harmless. Verified that the RUNTIME-
+    # critical packages stay single-version under when_possible: one python (3.12) and one
+    # py-numpy across the whole env, so HEAT's single interpreter has a consistent ABI.
+    # If a future change forks python or py-numpy, that is a red flag — re-check here.
+    unify: when_possible
+    targets:
+      granularity: generic             # portable baseline microarch
+
+  view: /opt/views/view
