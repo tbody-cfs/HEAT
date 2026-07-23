@@ -62,6 +62,23 @@ spack:
     # this env's python. Keeping it out avoids its heavy Qt/python build and its
     # matplotlib->pillow pins fighting freecad's pyside2.
 
+  # Source-tarball fallback mirror. Some upstreams delete old release tarballs/tags
+  # (e.g. github.com/szcompressor/SZ dropped ALL its releases + tags, so sz@2.1.12.5's
+  # download URL — and every other sz version's — now 404s). Spack's canonical public
+  # mirror still hosts these sources by sha256, so listing it lets `spack install` fall
+  # back to it when the upstream URL is dead. This bit only aarch64 in practice because
+  # x86 pulled a prebuilt sz binary and never fetched the source; on arm no binary exists
+  # so the fetch (and thus the whole build) failed. `binary: false` keeps this a
+  # source-only fallback: it adds no binary index and therefore CANNOT change
+  # concretization, so both arches' graphs are unaffected. Both build paths
+  # (heat-builder.dockerfile and docker/spack/build-local.sh) install from this env, so
+  # this single entry covers both.
+  mirrors:
+    spack-public-src:
+      url: https://mirror.spack.io
+      source: true
+      binary: false
+
   # Pin the compiler so every node builds with the image's gcc (registered as an
   # external in the builder Dockerfile via `spack external find gcc`). Use the
   # per-language provider form (spack's recommendation) rather than a blanket

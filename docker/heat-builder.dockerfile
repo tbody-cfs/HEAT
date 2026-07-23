@@ -63,12 +63,19 @@ COPY docker/spack/spack_config.yaml /root/.spack/config.yaml
 # Register the image's system gcc as an external so spack does not rebuild a compiler.
 RUN spack external find gcc
 
-# Public spack binary mirror + trust its signing keys. It rarely has our x86_64_v3 heavy
+# Public spack BINARY mirror + trust its signing keys. It rarely has our x86_64_v3 heavy
 # specs, BUT it does provide prebuilt binaries for the common toolchain (gmake, perl,
 # ncurses, cmake, autotools, ...) at generic targets — which substantially speeds a cold
 # build (no persistent local cache is available on some hosts; see §5a). Read-only source
 # of binaries; our own caches (ghcr / local) are configured in the install step below.
-RUN spack mirror add --scope site spack-public https://binaries.spack.io/develop \
+# NAME MATTERS: call this "spack-binaries", NOT "spack-public". The base image already
+# ships a default source mirror named "spack-public" -> https://mirror.spack.io (source,
+# no binaries). Adding a site-scope mirror with the SAME name shadows that default,
+# repointing "spack-public" to binaries.spack.io/develop — whose _source-cache lacks some
+# tarballs (e.g. sz@2.1.12.5, whose upstream releases were deleted), so from-source fetches
+# 404 with no fallback. Using a distinct name keeps the built-in source mirror intact; the
+# explicit spack-public-src entry in spack.yaml also guarantees the source fallback.
+RUN spack mirror add --scope site spack-binaries https://binaries.spack.io/develop \
  && spack buildcache keys --install --trust --yes-to-all
 
 # The HEAT spack environment.

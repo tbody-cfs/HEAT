@@ -83,9 +83,12 @@ apt-get -yqq install --no-install-recommends \
 
 spack external find gcc >/dev/null 2>&1
 
-# Public spack mirror: prebuilt binaries for the common toolchain (gmake, perl, cmake,
-# ncurses, ...) at generic targets — big speedup on a cold build. Signed -> trust keys.
-spack mirror add --scope site spack-public https://binaries.spack.io/develop >/dev/null 2>&1
+# Public spack BINARY mirror: prebuilt binaries for the common toolchain (gmake, perl,
+# cmake, ncurses, ...) at generic targets — big speedup on a cold build. Signed -> trust
+# keys. Named "spack-binaries" NOT "spack-public": the base image ships a default
+# "spack-public" -> mirror.spack.io SOURCE mirror; reusing that name would shadow it and
+# break from-source fetches (see docker/heat-builder.dockerfile for the full note).
+spack mirror add --scope site spack-binaries https://binaries.spack.io/develop >/dev/null 2>&1
 spack buildcache keys --install --trust --yes-to-all >/dev/null 2>&1
 
 mkdir -p /opt/spack-environment
