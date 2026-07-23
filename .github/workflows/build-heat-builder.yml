@@ -1,22 +1,36 @@
-# Build and publish the HEAT spack builder image to ghcr.io, warming the shared
-# spack OCI buildcache as it goes.
+# Build and publish the HEAT spack builder image to ghcr.io (multi-arch), warming the
+# shared spack OCI buildcache as it goes.
 #
-# STATUS: scaffolding for the eventual ghcr-cache pivot. During local development the
-# builder is built with docker/heat-builder.dockerfile using the on-disk local cache
-# mount (no ghcr needed). This workflow is the CI path that (a) publishes the builder
-# image and (b) populates ghcr.io/<owner>/heat-spack-cache so later builds — local or
-# CI — pull prebuilt binaries instead of recompiling.
+# WHAT IT DOES
+#   * Builds docker/heat-builder.dockerfile on NATIVE runners, one per architecture
+#     (amd64 on ubuntu-latest, arm64 on ubuntu-24.04-arm), pushes each as an untagged
+#     digest, then merges the digests into ONE multi-arch manifest at
+#     ghcr.io/<owner>/heat-builder:<tags>.
+#   * Populates the spack OCI buildcache (ghcr.io/<owner>/heat-spack-cache) as it builds
+#     — with --autopush in the Dockerfile each spec is pushed the moment it compiles, so
+#     later builds (CI or local) pull prebuilt binaries instead of recompiling. The
+#     buildcache is arch-aware, so amd64 and arm64 binaries coexist in the same cache.
 #
-# One-time setup before enabling:
-#   * Nothing beyond the default GITHUB_TOKEN: it is used both to log in to ghcr and,
-#     as a BuildKit secret, to authenticate spack's OCI buildcache push.
-#   * The first run is a long cold build (OpenFOAM, FreeCAD, VTK, Elmer, Qt, ...).
-#     ubuntu-latest hosted runners cap at 360 min; use a larger/self-hosted runner if
-#     the cold build exceeds that. Subsequent runs are fast (cache hits).
+# WHY NATIVE RUNNERS (not QEMU): the builder compiles the entire scientific stack from
+# source (OpenFOAM, FreeCAD, VTK, Elmer, Qt, OpenCASCADE, ...). Emulating arm64 on an
+# amd64 runner via QEMU would turn a multi-hour build into a multi-DAY one, so each arch
+# builds on its own native runner. The Dockerfile already selects the per-arch spack
+# target (x86_64_v3 on amd64, generic aarch64 / ARMv8-A on arm64).
 #
-# x86_64 only for now (portable target x86_64_v3, set inside the Dockerfile). The
-# aarch64 arch-switch already exists in the Dockerfile; add a linux/arm64 matrix entry
-# on ubuntu-24.04-arm plus a digest-merge step to publish a multi-arch builder later.
+# ARM64 IS BEST-EFFORT ("try"): the arm64 leg is marked experimental (continue-on-error).
+# If it fails — an unported spack package, a missing apt external, no cache yet — the
+# workflow still succeeds and publishes an amd64-only (or amd64 + whatever arm digest
+# succeeded) manifest. Promote arm64 to required once it builds reliably (drop
+# `experimental: true`).
+#
+# ONE-TIME SETUP
+#   * Only the default GITHUB_TOKEN is needed (ghcr login + spack OCI buildcache auth).
+#   * arm64 hosted runners: `ubuntu-24.04-arm` is GA for public repos; private repos need
+#     Team/Enterprise (or swap in a self-hosted arm64 runner label). If unavailable, the
+#     arm leg fails harmlessly (best-effort) until a runner exists.
+#   * First cold build per arch is long; ubuntu hosted runners cap at 360 min. If a cold
+#     build exceeds that, use a larger/self-hosted runner. Subsequent runs are fast
+#     (buildcache hits).
 
 name: Build HEAT builder image
 
@@ -39,12 +53,97 @@ env:
   BUILDER_IMAGE: ghcr.io/${{ github.repository_owner }}/heat-builder
 
 jobs:
-  build-builder:
-    runs-on: ubuntu-latest
+  # ---------------------------------------------------------------------------
+  # One build per architecture, on a native runner. Each pushes an untagged
+  # digest to ghcr; the merge job stitches them into a multi-arch manifest.
+  # ---------------------------------------------------------------------------
+  build:
+    name: build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
+    # arm64 is best-effort: its failure must not fail the workflow or the amd64 leg.
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            experimental: false
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            experimental: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Platform pair label (linux/amd64 -> linux-amd64)
+        id: prep
+        env:
+          platform: ${{ matrix.platform }}
+        run: |
+          echo "pair=$(echo "$platform" | tr '/' '-')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Provide GITHUB_TOKEN to BuildKit for the spack OCI cache
+        run: echo "${{ secrets.GITHUB_TOKEN }}" > "${RUNNER_TEMP}/ghcr_token"
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/heat-builder.dockerfile
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            SPACK_OCI_USER=${{ github.actor }}
+          secret-files: |
+            ghcr_token=${{ runner.temp }}/ghcr_token
+          # Per-arch gha cache scope so the two legs don't clobber each other's layer cache.
+          cache-from: type=gha,scope=heat-builder-${{ steps.prep.outputs.pair }}
+          cache-to: type=gha,mode=max,scope=heat-builder-${{ steps.prep.outputs.pair }}
+          # Push an untagged digest; the merge job assembles the tagged manifest list.
+          outputs: type=image,name=${{ env.BUILDER_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${RUNNER_TEMP}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ steps.prep.outputs.pair }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Merge whatever per-arch digests were produced into one multi-arch manifest.
+  # Runs even if the arm64 leg failed (if: always()), so amd64 always publishes.
+  # ---------------------------------------------------------------------------
+  merge:
+    name: merge manifest
+    needs: [build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digest-*
+          merge-multiple: true
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -67,21 +166,19 @@ jobs:
             type=sha
             type=ref,event=tag
 
-      - name: Provide GITHUB_TOKEN to BuildKit for the spack OCI cache
-        run: echo "${{ secrets.GITHUB_TOKEN }}" > "${RUNNER_TEMP}/ghcr_token"
+      - name: Fail if no arch built
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          count=$(ls -1 | wc -l)
+          echo "digests present: $count"
+          [ "$count" -ge 1 ] || { echo "::error::no per-arch digest was produced"; exit 1; }
 
-      - name: Build and push builder (warms the spack OCI cache)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/heat-builder.dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            SPACK_OCI_USER=${{ github.actor }}
-          secret-files: |
-            ghcr_token=${{ runner.temp }}/ghcr_token
-          cache-from: type=gha,scope=heat-builder
-          cache-to: type=gha,mode=max,scope=heat-builder
+      - name: Create multi-arch manifest from available digests
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.BUILDER_IMAGE }}@sha256:%s ' *)
+
+      - name: Inspect published manifest
+        run: docker buildx imagetools inspect ${{ env.BUILDER_IMAGE }}:${{ steps.meta.outputs.version }}
