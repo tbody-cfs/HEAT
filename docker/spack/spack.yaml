@@ -88,18 +88,37 @@ spack:
       externals:
         - spec: opengl@4.6
           prefix: /usr
-    # Use the system Qt5 (apt qtbase5 + friends, declared external) instead of building
-    # spack's qt. qt@5 was the longest single remaining build (~30-60 min) after mesa/llvm
-    # were removed; freecad -> py-pyside2 -> qt@5, coin3d, and py-pivy all consume it.
-    # Ubuntu 24.04 (noble) ships Qt 5.15.13 at /usr (qmake at /usr/bin/qmake), which
-    # satisfies freecad/pyside2's qt@5: requirement. The builder apt-installs the qt5 dev
-    # packages (see docker/heat-builder.dockerfile). Verified by concretization that qt
-    # drops to the external and freecad/coin3d/pyside2/vtk still resolve.
-    qt:
+    # NOTE: qt is NOT an external. It was tried as an apt external, but py-pyside2's
+    # patch() reaches THROUGH qt into its dependency subtree
+    # (`self.spec["qt"]["glx"]["libglx"]`, `self.spec["qt"]["libxcb"]`) — a depless external
+    # qt raises `KeyError: No spec with name glx`. Since qt's only consumers are
+    # py-pyside2 + freecad (vtk is ~qt; coin3d needs glx directly, not qt), the external
+    # bought nothing, so qt is built by spack. With opengl still external, spack-built qt
+    # gets qt->glx->[external opengl] (opengl provides glx+libglx) and qt->libxcb, so
+    # pyside2's patch() resolves. See SPACK_MIGRATION_PROGRESS.md §4g.
+    #
+    # Use the system LLVM 15 (apt llvm-15 + libclang-15-dev, declared external) for
+    # py-pyside2/shiboken (which needs libclang@10:15 to generate the Qt python bindings).
+    # This avoids a ~1.5-2 hr spack llvm@15 build. Ubuntu 24.04 ships llvm 15.0.7. llvm is
+    # a BUILD-only dep of pyside2, so it never ships in the final image. The spec below is
+    # exactly what `spack external find llvm` detects for the apt packages (verified to
+    # build pyside2). See §4c/§4d.
+    llvm:
       buildable: false
       externals:
-        - spec: qt@5.15.13+gui+opengl+sql+ssl+tools~webkit
+        - spec: llvm@15.0.7+clang~flang~lld~lldb
           prefix: /usr
+          extra_attributes:
+            compilers:
+              c: /usr/bin/clang-15
+              cxx: /usr/bin/clang++-15
+    # Pin py-pyside2 to a real 5.15 release. The solver otherwise picks @develop, which is
+    # BROKEN in spack 1.2.2: it references self.spec["llvm"] unconditionally but only
+    # depends_on llvm `when="@5.15"`, so @develop has no llvm node -> KeyError. @5.15.14
+    # pulls llvm@10:15+clang (satisfied by the external above). See §4c.
+    py-pyside2:
+      require:
+        - "@5.15.14"
     all:
       providers:
         # Pin the numeric providers so the whole stack shares ONE BLAS/LAPACK/FFT ABI
@@ -128,3 +147,13 @@ spack:
       granularity: generic             # portable baseline microarch
 
   view: /opt/views/view
+
+  # Custom repo overlay (namespace: heat) carrying local package fixes for spack 1.2.2
+  # builtin packages that are broken for this stack. Currently: py-pivy — its patch()
+  # enables C in CMake (removes `project(... NONE)`) but the builtin package only
+  # `depends_on("cxx")`, so the C compiler wrapper is never set up (SPACK_CC_* unset) and
+  # the build dies with a misleading "coin was not found". The overlay adds
+  # `depends_on("c", type="build")`. The builder COPYs docker/spack/repo to this path.
+  # See SPACK_MIGRATION_PROGRESS.md §4 (py-pivy).
+  repos:
+    - /opt/spack-environment/repo/spack_repo/heat

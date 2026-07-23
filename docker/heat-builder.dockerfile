@@ -32,21 +32,20 @@ ENV SPACK_OCI_CACHE=${SPACK_OCI_CACHE} \
 # PATH for all subsequent RUN steps.
 ENV PATH=/opt/spack/bin:$PATH
 
-# System OpenGL + Qt5 dev libraries. spack.yaml declares BOTH `opengl` and `qt` as
-# externals at /usr (see the packages: block there), so spack does NOT build:
-#   * mesa (and therefore NOT llvm — mesa is llvm's only consumer here), and
-#   * qt@5 (the longest single remaining build after mesa/llvm; consumed by
-#     freecad -> py-pyside2 -> qt, coin3d, and py-pivy).
-# These packages provide the GL + Qt5 headers/libs/qmake that vtk/freecad/coin3d/
-# pyside2/gmsh link against at build time. Ubuntu 24.04 ships Qt 5.15.13 (qmake at
-# /usr/bin/qmake), which satisfies freecad/pyside2's qt@5: requirement. HEAT renders via
-# the Dash web GUI + apt ParaView (no in-process GL), so system GL/Qt is sufficient at
-# runtime.
+# System OpenGL + LLVM-15 dev libraries, declared as spack externals in spack.yaml.
+#   * opengl (external at /usr) removes mesa AND llvm-via-mesa from the graph; it also
+#     provides the gl/glx/libglx virtuals that spack-built qt (and py-pyside2's patch())
+#     resolve against.
+#   * llvm-15 / libclang-15 (external at /usr) satisfies py-pyside2/shiboken's
+#     llvm@10:15+clang BUILD dep — avoiding a ~1.5-2 hr spack llvm@15 build. Ubuntu 24.04
+#     ships 15.0.7; llvm is build-only so it never enters the final image.
+# qt is NOT apt here: it is built by spack (the apt qt-external broke pyside2's patch(),
+# which walks qt's glx/libxcb subtree — see spack.yaml / SPACK_MIGRATION_PROGRESS.md §4g).
+# HEAT is headless (Dash web GUI + apt ParaView), so system GL suffices at runtime.
 RUN apt-get -yqq update && apt-get -yqq install --no-install-recommends \
       libglvnd-dev libgl-dev libglx-dev libegl-dev mesa-common-dev libglu1-mesa-dev \
       libx11-dev libxext-dev \
-      qtbase5-dev qtbase5-dev-tools qttools5-dev qttools5-dev-tools \
-      libqt5svg5-dev libqt5opengl5-dev qtdeclarative5-dev libqt5x11extras5-dev \
+      llvm-15 llvm-15-dev llvm-15-tools libclang-15-dev clang-15 libclang-common-15-dev \
  && rm -rf /var/lib/apt/lists/*
 
 # Install tree root (/opt/software) — the tree copied wholesale into the final image.
@@ -63,6 +62,9 @@ RUN spack external find gcc
 # The HEAT spack environment.
 RUN mkdir -p /opt/spack-environment
 COPY docker/spack/spack.yaml /opt/spack-environment/spack.yaml
+# Custom repo overlay (namespace: heat) with local package fixes (py-pivy C-dep); the
+# env's spack.yaml references it via `repos: [/opt/spack-environment/repo/spack_repo/heat]`.
+COPY docker/spack/repo /opt/spack-environment/repo
 WORKDIR /opt/spack-environment
 
 # Portable per-arch target requirement (on top of granularity:generic in spack.yaml).

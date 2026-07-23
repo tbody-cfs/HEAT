@@ -1,0 +1,40 @@
+# HEAT overlay of the spack builtin py-pivy (spack 1.2.2).
+#
+# The only change vs builtin is the added `depends_on("c", type="build")`. The builtin
+# package's patch() removes `NONE` from `project(pivy_cmake_setup NONE)` (per pivy issue
+# #93) which makes CMake enable the C language and test a C compiler — but the builtin only
+# declares `depends_on("cxx")`, so spack never sets up the C compiler wrapper (SPACK_CC_*
+# unset) and the build fails with a misleading "coin was not found". Adding the C build dep
+# wires up the wrapper. See SPACK_MIGRATION_PROGRESS.md §4 (py-pivy).
+
+from spack_repo.builtin.build_systems.python import PythonPackage
+
+from spack.package import *
+
+
+class PyPivy(PythonPackage):
+    """Python bindings to coin3d"""
+
+    homepage = "https://github.com/coin3d/pivy"
+    url = "https://github.com/coin3d/pivy/archive/refs/tags/0.6.8.tar.gz"
+
+    license("0BSD")
+
+    version("0.6.8", sha256="c443dd7dd724b0bfa06427478b9d24d31e0c3b5138ac5741a2917a443b28f346")
+
+    depends_on("c", type="build")  # HEAT overlay: patch() enables C in CMake; wrapper needs this
+    depends_on("cxx", type="build")  # generated
+
+    depends_on("coin3d")
+    depends_on("py-setuptools", type="build")
+    depends_on("cmake@3.18:", type="build")
+    depends_on("swig", type="build")
+
+    def patch(self):
+        # https://github.com/coin3d/pivy/issues/93
+        filter_file(
+            "project(pivy_cmake_setup NONE)",
+            "project(pivy_cmake_setup)",
+            "distutils_cmake/CMakeLists.txt",
+            string=True,
+        )

@@ -1,0 +1,3 @@
+repo:
+  namespace: 'heat'
+  api: v2.5
