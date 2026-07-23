@@ -335,6 +335,88 @@ pass `exec`: `--tmpfs /tmp/root/spack-stage:rw,exec,size=40g`. Confirmed: with `
 builds in ~13s. Also confirmed the host-dir cache persists (blobs/ + v3/ appeared after a
 partial run) — the whole point of §5b.
 
+## Session-6 update (FreeCAD chain fully fixed + MKL hard-removed + reusability + oneapi finding)
+
+### 6a. Reusability deliverables — COMMITTED (`c848d9d`)
+Turned the ad-hoc local recipe into committed, portable artifacts (all read the SAME
+`docker/spack/spack.yaml` + `repo/` the image uses, so local and CI build identically):
+- **`docker/spack/build-local.sh`** — portable local iteration harness. `docker run` (not
+  build) with a persistent host cache + reachable stage logs + `--autopush`. Derives paths
+  from its own location. `--spec X` installs one spec to debug it. Env: `HEAT_SPACK_CACHE`
+  (default `~/.cache/heat-spack`), `HEAT_STAGE_TMPFS_SIZE` (40g).
+- **`docker/heat-builder.dockerfile`** — added `ARG SPACK_INSTALL_FLAGS="--no-checksum"`
+  injected into `spack install`, so one Dockerfile drives strict CI and lenient local.
+- **`docker/spack/README.md`** — maintainer guide (local test vs CI build vs troubleshooting).
+- **`docker/README.md`** — pointer to the spack guide (legacy content kept).
+
+### 6b. The three FreeCAD-chain build fixes (UNCOMMITTED as of end of session)
+All were validated by building; the graph is `freecad -> pcl -> flann`, `freecad -> py-pyside2`.
+- **flann** (`spack.yaml`): `flann: require: ["~mpi"]`. Default `+mpi` drags in boost@1.89;
+  flann 1.9.2's (2018) CMake wants a compiled `boost_system` component that modern boost no
+  longer ships (Boost.System went header-only) → "Could not find boost_system". pcl needs
+  only flann's kd-tree, so `~mpi` drops boost. VERIFIED: flann builds clean (6m), cached.
+- **elmerfem** (NEW overlay `repo/spack_repo/heat/packages/elmerfem/package.py`): copy of
+  builtin + `@9.0` branch in `patch()`. gfortran 10+ makes it a HARD ERROR to redefine a
+  host-associated DO index inside a contained proc called from within a `DO i` loop
+  ("Index variable 'i' redefined ... in procedure 'inputvector'"). The 7 InputVector/
+  InputTensor contained procs in `fem/src/modules/DCRComplexSolve.F90` use i/j as loop
+  counters without a local decl. Patch adds `INTEGER :: i, j` local to each (filter_file on
+  `INTEGER :: n, NodeIndexes(:)`). No gfortran flag suppresses it (`-w`,`-std=legacy` tested);
+  no newer *safe* elmer release than 9.0 (only git devel/ice). ThermoElectricSolver.F90 &
+  Stress.F90 already declare i,j local → no patch needed.
+- **llvm external prefix** (`spack.yaml`): changed `prefix: /usr` → **`/usr/lib/llvm-15`**.
+  py-pyside2/shiboken's `data/shiboken_helpers.cmake` `setup_clang` searches
+  `<llvm prefix>/lib` for `libclang.so`; on Ubuntu that's under `/usr/lib/llvm-15/lib` (the
+  self-contained versioned root), NOT `/usr/lib`. With `/usr` it failed "Unable to find the
+  Clang library in /usr". Compiler paths in `extra_attributes` stay absolute (/usr/bin/clang-15).
+
+### 6c. MKL — the `providers:` PREFERENCE was NOT enough; use hard `require` (UNCOMMITTED)
+`packages:all:providers` is advisory; under `unify:when_possible` + binary-cache reuse the
+concretizer STILL satisfied openfoam's `fftw-api` with a prebuilt `intel-oneapi-mkl@2026`
+binary (openfoam was the sole fftw-api consumer). Fix = HARD requirements on the virtuals:
+```yaml
+packages:
+  fftw-api: {require: [fftw]}
+  blas:     {require: [openblas]}
+  lapack:   {require: [openblas]}
+```
+VERIFIED (lock scan): no `intel-oneapi-mkl`; fftw-api→fftw@3.3.11, blas/lapack→openblas.
+**Gotcha:** removing MKL changed `intel-oneapi-runtime` out of base link-deps → EVERY heavy
+spec hash changed (qt/opencascade/vtk/openfoam/freecad all cache-MISS) → the MKL-free build
+is a near-cold rebuild. Paid once; autopush re-warms a clean cache.
+
+### 6d. Lingering oneapi is BENIGN — left in deliberately
+Lock still shows `intel-oneapi-runtime@2025.3.3` (47 MB, installed) + `intel-oneapi-compilers`
+(**NOT installed** — build-only dep of reused binaries, never downloaded). NOTHING is compiled
+with oneapi (all `%gcc`). It's a **reuse artifact**: the public-mirror toolchain binaries
+(perl/cmake/python, pulled "from build cache") were built by spack CI with the Intel runtime,
+so reuse inherits the `intel-oneapi-runtime` link edge. Removing it (buildable:false) would
+force source-rebuilding the whole base toolchain (losing the mirror speedup) to shave 47 MB of
+inert runtime — **not worth it. Decision: leave it.**
+
+### 6e. Cache mechanics VERIFIED this session
+- `--autopush` on the mirror pushes each spec the moment it builds (continuous, not at-end).
+  Confirmed cache grew live; kill+restart correctly REUSES (`fetching from build cache` →
+  `relocating`, 0-1s) for our x86_64_v3 hashes the public mirror can't have.
+- Push uses `--without-build-dependencies` (build deps mostly come from the public mirror or
+  aren't needed on reuse). One-line lever to change if cold rebuilds keep rebuilding them.
+
+### 6f. Why the LEGACY `docker/Dockerfile` never hit any of this
+Legacy installs **prebuilt binaries** (`ppa:freecad-maintainers` → `freecad-python3`,
+`ppa:elmer-csc` → `elmerfem-csc`) — never compiles freecad/elmer. So: (1) flann/boost linked at
+PPA build time against an older boost that still had `boost_system`; (2) elmer compiled by
+Launchpad with an older gfortran that only warned. spack compiles from source against gcc 13.3
++ boost 1.89 → surfaces the latent incompatibilities. Inherent source-vs-binary tradeoff.
+
+### 6g. STATE AT END OF SESSION
+- **MKL-free validation build RUNNING** (container `heatbuild2`, ~211/388 installed, 0 failed).
+  flann already built+cached; coin3d done; py-pyside2/pcl/freecad/elmerfem still ahead.
+- **Uncommitted:** `docker/spack/spack.yaml` (flann/llvm/mkl fixes) + untracked
+  `docker/spack/repo/spack_repo/heat/packages/elmerfem/`. **Commit all 4 fixes together once
+  the build validates the FreeCAD chain + elmerfem green.** NO push without explicit instruction.
+- Watch: `docker logs -f heatbuild2`. Host cache: `/data/home/tbody/HEAT_dir/spack-cache-host`.
+  Staging dir the run mounts: `scratchpad/host/` (copy of docker/spack + build_run.sh).
+
 ## Open questions to resolve during Phase 2/3
 - Does HEAT `import paraview` in-process anywhere (PVPath into sys.path), or only via the
   `pvpythonCMD` subprocess? If in-process, apt paraview (system python) won't load under the
@@ -349,13 +431,19 @@ partial run) — the whole point of §5b.
   Fallback: keep only OpenFOAM as an in-builder source Allwmake if the spack wmake env fights.
 
 ## How to resume / useful commands
-- Watch the build: tail the task output file (task `bzitcncda`).
-- Re-verify concretization quickly:
+- Watch the running build (detached container, survives your shell/SSH exit):
+  `docker logs -f heatbuild2` · status `docker ps --filter name=heatbuild2`
+  · installed count `docker logs heatbuild2 2>&1 | grep -c '^\[+\]'`
+- Fast local iteration (the committed, reusable harness — persistent host cache + logs):
+  `docker/spack/build-local.sh`  ·  one spec: `docker/spack/build-local.sh --spec qt`
+- Re-verify concretization quickly (no build), e.g. to check for MKL/oneapi:
   `docker run --rm --entrypoint bash -v <repo>/docker/spack:/host:ro spack/ubuntu-noble:1.2.2 -c '
      export PATH=/opt/spack/bin:$PATH; mkdir -p /root/.spack; cp /host/spack_config.yaml /root/.spack/config.yaml;
-     spack external find gcc; mkdir -p /env; cp /host/spack.yaml /env/; cd /env;
+     spack external find gcc; mkdir -p /env; cp /host/spack.yaml /env/; cp -r /host/repo /env/; cd /env;
      spack -e . config add "packages:all:require:target=x86_64_v3"; spack -e . concretize -f'`
-- Build the builder locally (uses the local cache mount):
-  `DOCKER_BUILDKIT=1 docker build -f docker/heat-builder.dockerfile -t heat-builder:dev .`
-- With the ghcr cache instead (later): add `--build-arg SPACK_OCI_USER=$USER --secret id=ghcr_token,env=GHCR_TOKEN`.
-- The full refactor plan file: `/data/home/tbody/.claude/plans/i-ve-been-working-on-synchronous-peacock.md`.
+  Then scan `/env/spack.lock` with python for `intel-oneapi-*` nodes / provider choices.
+- Faithful image build (exactly as CI): `docker build -f docker/heat-builder.dockerfile -t heat-builder:test .`
+  (strict source checksums: add `--build-arg SPACK_INSTALL_FLAGS=`)
+- CI path: `.github/workflows/build-heat-builder.yml` (publishes builder + warms ghcr cache; only needs GITHUB_TOKEN).
+- Maintainer guide: `docker/spack/README.md`. Full refactor plan:
+  `/data/home/tbody/.claude/plans/i-ve-been-working-on-synchronous-peacock.md`.

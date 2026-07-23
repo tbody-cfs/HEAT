@@ -107,7 +107,16 @@ spack:
       buildable: false
       externals:
         - spec: llvm@15.0.7+clang~flang~lld~lldb
-          prefix: /usr
+          # prefix is /usr/lib/llvm-15, NOT /usr. Ubuntu's llvm-15 is a self-contained
+          # versioned tree there (bin/clang, lib/libclang.so, include/clang-c/Index.h);
+          # /usr/bin/clang-15 etc. are just symlinks into it. py-pyside2's shiboken CMake
+          # (data/shiboken_helpers.cmake setup_clang) searches <llvm prefix>/lib for
+          # libclang.so|libclang.so.1 -> with prefix=/usr it looks in /usr/lib and fails
+          # ("Unable to find the Clang library in /usr"), because the unversioned
+          # libclang.so lives under /usr/lib/llvm-15/lib (or the multiarch
+          # /usr/lib/x86_64-linux-gnu/libclang-15.so.1), not /usr/lib. Pointing the prefix
+          # at the llvm-15 root makes shiboken resolve libclang. See §4c/§4d.
+          prefix: /usr/lib/llvm-15
           extra_attributes:
             compilers:
               c: /usr/bin/clang-15
@@ -119,14 +128,32 @@ spack:
     py-pyside2:
       require:
         - "@5.15.14"
+    # flann is pulled transitively (freecad -> pcl -> flann@1.9.2). Its default +mpi
+    # variant drags in boost@1.89, and flann 1.9.2's (2018) CMake asks for a compiled
+    # `boost_system` component that modern boost no longer ships (Boost.System went
+    # header-only) -> "Could not find boost_system" cmake failure. pcl only needs flann's
+    # kd-tree, not its MPI, so ~mpi drops the boost dependency and the build succeeds.
+    flann:
+      require:
+        - "~mpi"
+    # HARD-require the numeric-virtual providers, so the whole stack shares ONE
+    # BLAS/LAPACK/FFT ABI (openblas + fftw). These MUST be `require`, not just the
+    # `providers:` preference below: a preference is advisory and the concretizer
+    # overrode it under unify:when_possible + binary-cache reuse — it satisfied openfoam's
+    # fftw-api dependency with a prebuilt intel-oneapi-mkl@2026 binary (a multi-GB library
+    # that also injects intel-oneapi-runtime across the graph, contradicting the
+    # single-openblas design and risking numpy/scipy linking MKL). A requirement is a hard
+    # constraint reuse cannot beat, so MKL is excluded outright. Verified: openfoam was the
+    # sole fftw-api consumer pulling MKL.
+    fftw-api:
+      require: [fftw]
+    blas:
+      require: [openblas]
+    lapack:
+      require: [openblas]
     all:
       providers:
-        # Pin the numeric providers so the whole stack shares ONE BLAS/LAPACK/FFT ABI
-        # (openblas, per the spack.yaml design). Without this pin the concretizer is free
-        # to satisfy fftw-api (an unconditional openfoam dep) — and even blas/lapack — with
-        # intel-oneapi-mkl, which it did via binary-cache reuse: a multi-GB library that
-        # contradicts the single-openblas design and risks numpy/scipy linking MKL instead
-        # of openblas. Pinning fftw-api to fftw keeps fftw tiny and drops MKL entirely.
+        # Preference order (kept as a hint; the hard requirements above are what bind).
         blas: [openblas]
         lapack: [openblas]
         fftw-api: [fftw]

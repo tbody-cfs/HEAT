@@ -103,9 +103,14 @@ RUN case "$(uname -m)" in \
 # In both cases we push to exactly one target ($PUSH_TARGET) — never to a cache we lack
 # credentials for.
 #
-# Install runs WITHOUT --fail-fast so one broken package does not abort the rest, and the
-# successful specs are pushed regardless of the overall result (self-warming). The real
-# install exit code is re-propagated so CI still fails on a broken build.
+# Install runs WITHOUT --fail-fast so one broken package does not abort the rest.
+# --autopush on the push-target mirror pushes each spec the MOMENT it finishes building
+# (continuous, not at-end), so a build that is killed or crashes partway — a long cold CI
+# run hitting the 360-min cap, a broken package, a cancelled job — still banks every
+# already-built spec to the cache and the next run resumes from there. The trailing
+# `buildcache push` is now just a catch-all + `--update-index` (autopush does not refresh
+# the index), so the mirror's index reflects all specs. The real install exit code is
+# re-propagated so CI still fails on a broken build.
 # NOTE: use the explicit `spack -e .` env flag on every command. `spack env activate .`
 # does not persist inside a non-interactive RUN (activation is a shell-function effect;
 # here we invoke the spack binary on PATH, so the activation would be lost).
@@ -113,13 +118,13 @@ RUN --mount=type=secret,id=ghcr_token,required=false \
     --mount=type=cache,target=/spack-cache,sharing=locked \
     if [ -n "${SPACK_OCI_USER}" ] && [ -s /run/secrets/ghcr_token ]; then \
       export SPACK_OCI_TOKEN="$(cat /run/secrets/ghcr_token)" && \
-      spack -e . mirror add --unsigned \
+      spack -e . mirror add --unsigned --autopush \
         --oci-username-variable SPACK_OCI_USER \
         --oci-password-variable SPACK_OCI_TOKEN \
         heat-oci "${SPACK_OCI_CACHE}" && \
       PUSH_TARGET=heat-oci ; \
     else \
-      spack -e . mirror add --unsigned local-cache file:///spack-cache && \
+      spack -e . mirror add --unsigned --autopush local-cache file:///spack-cache && \
       { spack -e . mirror add --unsigned heat-oci "${SPACK_OCI_CACHE}" || true ; } && \
       PUSH_TARGET=local-cache ; \
     fi && \
