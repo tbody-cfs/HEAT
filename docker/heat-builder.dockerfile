@@ -55,9 +55,10 @@ COPY docker/spack/spack_config.yaml /root/.spack/config.yaml
 # Register the image's system gcc as an external so spack does not rebuild a compiler.
 RUN spack external find gcc
 
-# Public spack binary mirror (covers common deps) + trust its signing keys.
-RUN spack mirror add --scope site spack-public https://binaries.spack.io/develop \
- && spack buildcache keys --install --trust --yes-to-all
+# NOTE: the public spack mirror (binaries.spack.io/develop) is intentionally NOT used.
+# It almost never has a binary for our x86_64_v3 + this-concretization hashes (gotcha 12),
+# so it only adds key-trust + per-spec lookup overhead. All caching is via the ghcr OCI
+# cache and/or the local directory cache configured in the install step below.
 
 # The HEAT spack environment.
 RUN mkdir -p /opt/spack-environment
@@ -75,40 +76,41 @@ RUN case "$(uname -m)" in \
 
 # Install the environment.
 #
-# Two binary caches accelerate this, both unsigned:
-#   * local-cache  — a directory buildcache on a BuildKit cache mount (/spack-cache).
-#                    It persists across local `docker build`s on this machine, so
-#                    re-running the build (even after invalidating this layer by
-#                    editing spack.yaml) pulls already-built specs instead of
-#                    recompiling. This is the DEVELOPMENT default and needs no creds.
-#                    [TEMPORARY: remove/relegate once the shared ghcr cache is primary.]
-#   * heat-oci     — the shared ghcr OCI cache, added only when SPACK_OCI_USER is set
-#                    and a ghcr_token secret is provided. This is the eventual primary
-#                    cache (CI + team); it stays wired so the pivot is just supplying
-#                    the token.
+# Cache strategy — a ghcr token (BuildKit secret) selects which cache is read+pushed,
+# so a missing token can never make a push fail the build. Both caches are unsigned:
+#   * TOKEN PRESENT (CI / team): the shared ghcr OCI cache (heat-oci) is the read+push
+#     cache — the persistent, shared cache. The local BuildKit cache is not used (it is
+#     ephemeral on CI runners anyway).
+#   * NO TOKEN (local dev): a directory buildcache on the BuildKit cache mount
+#     (/spack-cache, local-cache) is the read+push cache — it persists across local
+#     `docker build`s on this machine. The ghcr cache is ALSO added READ-ONLY (anonymous,
+#     best-effort `|| true`) so local builds can still PULL team-built binaries when the
+#     ghcr package is public; nothing is pushed there without a token.
+# In both cases we push to exactly one target ($PUSH_TARGET) — never to a cache we lack
+# credentials for.
 #
-# Install runs WITHOUT --fail-fast so one broken package does not abort the rest, and
-# every successfully-built spec is pushed back to whichever caches are configured
-# regardless of the overall result (self-warming). The real install exit code is
-# re-propagated so CI still fails on a broken build.
+# Install runs WITHOUT --fail-fast so one broken package does not abort the rest, and the
+# successful specs are pushed regardless of the overall result (self-warming). The real
+# install exit code is re-propagated so CI still fails on a broken build.
 # NOTE: use the explicit `spack -e .` env flag on every command. `spack env activate .`
 # does not persist inside a non-interactive RUN (activation is a shell-function effect;
 # here we invoke the spack binary on PATH, so the activation would be lost).
 RUN --mount=type=secret,id=ghcr_token,required=false \
     --mount=type=cache,target=/spack-cache,sharing=locked \
-    spack -e . mirror add --unsigned local-cache file:///spack-cache && \
     if [ -n "${SPACK_OCI_USER}" ] && [ -s /run/secrets/ghcr_token ]; then \
       export SPACK_OCI_TOKEN="$(cat /run/secrets/ghcr_token)" && \
       spack -e . mirror add --unsigned \
         --oci-username-variable SPACK_OCI_USER \
         --oci-password-variable SPACK_OCI_TOKEN \
-        heat-oci "${SPACK_OCI_CACHE}" ; \
+        heat-oci "${SPACK_OCI_CACHE}" && \
+      PUSH_TARGET=heat-oci ; \
+    else \
+      spack -e . mirror add --unsigned local-cache file:///spack-cache && \
+      { spack -e . mirror add --unsigned heat-oci "${SPACK_OCI_CACHE}" || true ; } && \
+      PUSH_TARGET=local-cache ; \
     fi && \
     { spack -e . install ; rc=$? ; \
-      spack -e . buildcache push --unsigned --update-index --without-build-dependencies local-cache || true ; \
-      if spack -e . mirror list | grep -q heat-oci ; then \
-        spack -e . buildcache push --unsigned --update-index --without-build-dependencies heat-oci || true ; \
-      fi ; \
+      spack -e . buildcache push --unsigned --update-index --without-build-dependencies "${PUSH_TARGET}" || true ; \
       exit $rc ; }
 
 # Generate the environment activation script the final image / entrypoint sources.
