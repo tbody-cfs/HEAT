@@ -109,7 +109,11 @@ Also: machine-wide no-push/no-PR deny rules added to `~/.claude/settings.json`; 
 10. **BuildKit secret must be `required=false`** so local builds without a ghcr token don't error.
 11. **Local cache** = BuildKit `--mount=type=cache,target=/spack-cache` + directory mirror
     `file:///spack-cache`; push after install regardless of exit code (`|| true; exit $rc`).
-    Cache mounts persist across (even failed) builds → true self-warming for local dev.
+    ~~Cache mounts persist across (even failed) builds → true self-warming for local dev.~~
+    **DISPROVEN in Session-5 — see §5a.** On this host BuildKit cache mounts do NOT persist
+    between `docker build` invocations at ALL (proven: a marker written in one build is gone in
+    the next, even after a SUCCESSFUL build). The local-cache-mount strategy never worked here;
+    use a host-directory bind mount via `docker run` instead (§5b).
 12. **Public mirror rarely matches our hashes.** `binaries.spack.io/develop` almost never has a
     binary for the `x86_64_v3` + this-concretization hashes → genuine cold source build
     (scipy 36 min, pandas 15 min). This is why the first build is many hours; the local cache
@@ -278,6 +282,58 @@ and `gmsh +opencascade`; it underpins HEAT's STEP→mesh pipeline. ~1h13m cold (
 C++, no public-mirror binary for our hash). Already lean — `tbb/vtk/ffmpeg/freeimage/rapidjson`
 all off. Not worth trimming further (`draw`/`visualization` risky, and it's now cached). Accept
 it as a one-time cost the cache absorbs.
+
+## Session-5 update (FreeCAD fixes applied + cache-persistence discovery + host-dir/tmpfs run)
+_New commits: `dcbbb39` (drop public mirror, token-gated cache), `5071e2d` (FreeCAD chain
+fixes). All FreeCAD-chain fixes from §4 are now IN spack.yaml/Dockerfile._
+
+### 5a. BuildKit cache mounts DO NOT PERSIST on this host (overturns gotcha 11)
+- Proven with a controlled test: write a marker to `--mount=type=cache,target=/x` in build A,
+  read it in build B → **gone**, even when build A SUCCEEDS (not just on failure). Docker 28.3.3,
+  BuildKit v0.23.2, `docker` driver, overlay2.
+- Consequence: the Session-3 "cache reuse" (`relocating`/`fetching from build cache`) was the
+  **public mirror** (simple generic-target specs), NOT a persisted local cache — and I removed
+  the public mirror in `dcbbb39`. So after `dcbbb39` a local `docker build` has ZERO cache and is
+  fully cold. The 158 specs the Session-3 build "pushed" to the cache mount vanished with it.
+
+### 5b. Working local cache = host-dir bind mount via `docker run` (NOT docker build)
+- `docker build` RUN steps cannot bind-mount host dirs (only cache mounts + secrets), and the
+  cache mounts don't persist here → for local dev, run the install with **`docker run`** instead,
+  bind-mounting a host directory as the spack `file://` buildcache. A normal bind mount persists
+  across runs, failures, and reboots. Verified root-in-container can write the `/data` (FSx/NFS)
+  cache dir — no root_squash.
+- **Build STAGE in RAM (tmpfs):** the box has 62 GB RAM (58 free) and `/data` is network-backed,
+  so mount a tmpfs at the stage dir for fast compile I/O. **MUST pass `exec`** —
+  `--tmpfs /tmp/root/spack-stage:rw,exec,size=40g`. Docker's `--tmpfs` defaults to **noexec**,
+  which makes every `configure`/compiler invocation fail with `Permission denied` (gmake dies at
+  0s → cascades to "all packages failed"). This bit the first Session-5 run.
+- The run recipe (see `scratchpad/build_run.sh`): `docker run -d` the spack base image, mount
+  `docker/spack` (ro), the host cache dir → `/spack-cache`, scratchpad → `/out`, tmpfs stage
+  (exec); the script apts GL+llvm-15, `external find gcc`, copies spack.yaml+repo, adds the
+  `file:///spack-cache` mirror, `spack -e . install`, pushes to the host cache, and dumps FULL
+  failed stage logs to the tee'd `/out/heat-build-run.log` (solves the ephemeral-log problem).
+  A detached `docker run -d` container also survives the Claude session exiting (unlike the
+  harness-anchored first build in Phase 1a).
+- The committed `heat-builder.dockerfile` still uses the BuildKit-mount local-cache + ghcr path:
+  that's correct for CI (ghcr push persists remotely on a token), but for LOCAL dev use the
+  docker-run recipe above. TODO: consider documenting/scripting this as the canonical local build.
+
+### 5c. Cold-build fetch handling (RESOLVED)
+On a cold build (empty cache) everything builds from source, and spack 1.2.2 lacks a checksum
+for some newer sources (e.g. `perl@5.42.2`) → fetch fails. Two mitigations now in place:
+- **Public mirror re-enabled** (reverting part of `dcbbb39`, per user). It rarely has our
+  x86_64_v3 heavy specs but DOES provide the common toolchain binaries (gmake, perl, ncurses,
+  cmake, ...) at generic targets → big cold-build speedup and sidesteps the missing-checksum
+  fetches for those. Re-added to both `heat-builder.dockerfile` and `scratchpad/build_run.sh`.
+- **`--no-checksum`** on `spack -e . install` in `build_run.sh`, for any source still built
+  cold that lacks a checksum. (Both moot once the host cache is warm.)
+
+### 5d. tmpfs stage MUST be `exec` (gotcha)
+`docker run --tmpfs /tmp/root/spack-stage:...` defaults to **noexec** → every `configure`/
+compiler invocation fails `Permission denied` (gmake dies at 0s → all packages fail). Always
+pass `exec`: `--tmpfs /tmp/root/spack-stage:rw,exec,size=40g`. Confirmed: with `exec`, gmake
+builds in ~13s. Also confirmed the host-dir cache persists (blobs/ + v3/ appeared after a
+partial run) — the whole point of §5b.
 
 ## Open questions to resolve during Phase 2/3
 - Does HEAT `import paraview` in-process anywhere (PVPath into sys.path), or only via the
