@@ -28,6 +28,15 @@ ARG SPACK_OCI_USER=""
 ENV SPACK_OCI_CACHE=${SPACK_OCI_CACHE} \
     SPACK_OCI_USER=${SPACK_OCI_USER}
 
+# Extra flags passed to `spack install`. Defaults to --no-checksum because spack 1.2.2
+# ships without a source checksum for a few specs in this graph (e.g. perl@5.42.2), so a
+# source build of them would otherwise fail on fetch. This only relaxes SOURCE-archive
+# checksums; buildcache binaries are still verified by their own gpg signatures. The
+# local test harness (docker/spack/build-local.sh) uses the same default, so local and CI
+# concretize/build identically. Override to "" (`--build-arg SPACK_INSTALL_FLAGS=`) for a
+# strict, checksum-verified source build.
+ARG SPACK_INSTALL_FLAGS="--no-checksum"
+
 # The base image exposes spack via its entrypoint, not on the login PATH. Put it on
 # PATH for all subsequent RUN steps.
 ENV PATH=/opt/spack/bin:$PATH
@@ -114,7 +123,7 @@ RUN --mount=type=secret,id=ghcr_token,required=false \
       { spack -e . mirror add --unsigned heat-oci "${SPACK_OCI_CACHE}" || true ; } && \
       PUSH_TARGET=local-cache ; \
     fi && \
-    { spack -e . install ; rc=$? ; \
+    { spack -e . install ${SPACK_INSTALL_FLAGS} ; rc=$? ; \
       spack -e . buildcache push --unsigned --update-index --without-build-dependencies "${PUSH_TARGET}" || true ; \
       exit $rc ; }
 

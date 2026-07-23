@@ -1,5 +1,10 @@
 # HEAT Docker
 
+> **Spack-based build (in progress):** the dependency stack is being migrated to a
+> two-image spack build (`docker/heat-builder.dockerfile` + `docker/spack/`). For how to
+> test that build locally and how CI publishes it, see **[`docker/spack/README.md`](spack/README.md)**.
+> The sections below document the current/legacy single-file OpenFOAM build in `docker/Dockerfile`.
+
 ## Build order and caching
 
 The Dockerfile is ordered so that **changing the HEAT branch/tag (`HEAT_REF`) does not force a full rebuild** of OpenFOAM and swak4Foam:
