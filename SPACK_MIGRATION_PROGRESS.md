@@ -417,6 +417,69 @@ Launchpad with an older gfortran that only warned. spack compiles from source ag
 - Watch: `docker logs -f heatbuild2`. Host cache: `/data/home/tbody/HEAT_dir/spack-cache-host`.
   Staging dir the run mounts: `scratchpad/host/` (copy of docker/spack + build_run.sh).
 
+## Session-7 update (sz source-mirror + autopush-index fixes; x86⇄arm shared-disk coordination)
+
+### 7a. Two more spack fixes landed (both validated on BOTH arches)
+- **sz source fetch (commit `9fb0095`):** `openfoam → adios2 → sz@2.1.12.5` failed to build
+  *from source* — upstream `szcompressor/SZ` deleted all tags/releases, so its tarball 404s.
+  x86 never saw it (pulled a prebuilt binary); aarch64 had no binary → source fetch → 404.
+  **Root cause was self-inflicted:** our scripts did `spack mirror add --scope site
+  spack-public …binaries.spack.io…`, REUSING the name of the base image's built-in
+  `spack-public → mirror.spack.io` *source* mirror, shadowing it. Fix = (A) explicit
+  source-only mirror `spack-public-src → mirror.spack.io` (`source:true, binary:false`) in
+  spack.yaml + (B) rename our binary mirror to `spack-binaries` in heat-builder.dockerfile
+  AND build-local.sh. Both concretization-neutral (verified: 263 specs, byte-identical
+  with/without). GOTCHA: never reuse the name `spack-public` for a mirror.
+- **autopush doesn't index (commit `c4b383c`):** `--autopush` banks each spec's
+  tarball+manifest but does NOT refresh the buildcache index, and spack needs the index to
+  reuse cached specs. So a build killed mid-way (the 360-min CI cap case) leaves banked specs
+  UNINDEXED → next run finds "no index found" and rebuilds from source (0 reuse). Fix = add
+  `spack buildcache update-index` BEFORE `spack install` in both entrypoints (proven on arm:
+  0 reuse → ~185 specs reused). Index-only, no concretization impact. NOTE the scratchpad
+  `build_run.sh` driving the current running build was NOT patched (only indexes at end), so
+  if that container is killed mid-build, `update-index` before resuming.
+
+### 7b. ⚠️ Commit-hash rewrite — old Session-6 hashes are STALE
+All commit history was rewritten (git filter-branch) to strip the `Co-Authored-By: Claude`
+trailer, and `"includeCoAuthoredBy": false` was set in `~/.claude/settings.json` so it's not
+re-added. This changed every commit hash: Session-6's `b375555`/`e2a464e`/`c848d9d` are now
+`28473a0`/`6b75eba`/`d57a638` etc. Current `spackBuild` tip: `c4b383c`. Don't chase old hashes.
+
+### 7c. x86 ⇄ arm SHARED-DISK COORDINATION (read this before touching coordination)
+An arm64 (Apple-Silicon-class / aarch64) machine **shares the same disk and $HOME** as the
+x86_64 machine and runs its own Claude Code instance, doing a native-aarch64 trial of this
+same build (`target=aarch64`). Critical implications:
+- **SAME git checkout.** Edits the arm agent makes to `docker/spack/` show up in x86's
+  working tree. Two committers on one checkout = index/HEAD races. **RULE (operator):
+  x86 OWNS ALL COMMITS; the arm agent NEVER runs git commit/push.** arm edits the working
+  tree to test, proposes changes, x86 concretize-checks + commits. Single committer.
+- **Communication channel:** message-per-file under `HEAT_dir/coord/` (v2 protocol in
+  `coord/protocol.md`): `coord/log/<UTC>__<author>__<NNN>.md` (one msg per file, nobody edits
+  another's file → race-free), `coord/status/{x86,arm}.md` (single-writer status). Every
+  message is ALSO mirrored to `HEAT_dir/x86_to_arm_communication.md` (human rollup; rebuildable
+  via `cat coord/log/*.md`). To catch replies, poll `coord/log/` for new `__arm__` files.
+- **Shared-file changes must be arch-safe:** a `spack.yaml`/overlay edit affects both builds.
+  Prefer concretization-neutral / arch-guarded changes; x86 validates on x86_64 first.
+- The Claude Code CLI itself was installed arm-side in an ISOLATED tree (`~/.claude-arm`, via
+  `~/setup-claude-arm.sh`) sharing `~/.claude` config — see that script. `HEAT/TEMP_arm_instructions.md`
+  drove the arm build trial (delete when done).
+- Both sz and update-index fixes were diagnosed/validated on aarch64 by the arm agent; the
+  arm build got green through sz and was building adios2/openfoam/qt onward.
+
+### 7d. FreeCAD chain FULLY VALIDATED on x86 (this session)
+The MKL-free validation build (container `heatbuild2`) proved all 4 chain fixes by building:
+flann, elmerfem, py-pivy, and — the last one — **py-pyside2**: shiboken's configure printed
+`CLANG: /usr/lib/llvm-15/.../libclang.so detected by LLVM_INSTALL_DIR`, confirming the
+llvm-external-prefix fix (`/usr` → `/usr/lib/llvm-15`). At last check: 222 installed, 0 failed;
+openfoam Allwmake + vtk + freecad + gmsh still building (multi-hour cold rebuild, MKL removal
+invalidated the warm cache as expected). Watch: `docker logs -f heatbuild2`.
+
+### 7e. Branch/push state
+`spackBuild` is pushed to the **fork** remote (`git@github.com:tbody-cfs/HEAT.git`, SSH — the
+`fork` remote URL was switched from HTTPS to SSH). Force-pushed once after the history rewrite.
+The two newest commits (`9fb0095`, `c4b383c`) are LOCAL ONLY — not yet force-pushed to the fork.
+`git push` is denied by a settings deny rule; the operator pushes manually (`! git push …`).
+
 ## Open questions to resolve during Phase 2/3
 - Does HEAT `import paraview` in-process anywhere (PVPath into sys.path), or only via the
   `pvpythonCMD` subprocess? If in-process, apt paraview (system python) won't load under the
