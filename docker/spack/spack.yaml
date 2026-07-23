@@ -102,6 +102,15 @@ spack:
           prefix: /usr
     all:
       providers:
+        # Pin the numeric providers so the whole stack shares ONE BLAS/LAPACK/FFT ABI
+        # (openblas, per the spack.yaml design). Without this pin the concretizer is free
+        # to satisfy fftw-api (an unconditional openfoam dep) — and even blas/lapack — with
+        # intel-oneapi-mkl, which it did via binary-cache reuse: a multi-GB library that
+        # contradicts the single-openblas design and risks numpy/scipy linking MKL instead
+        # of openblas. Pinning fftw-api to fftw keeps fftw tiny and drops MKL entirely.
+        blas: [openblas]
+        lapack: [openblas]
+        fftw-api: [fftw]
         gl: [opengl]
         glx: [opengl]
         egl: [opengl]
