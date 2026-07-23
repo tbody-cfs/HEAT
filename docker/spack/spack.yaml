@@ -76,6 +76,23 @@ spack:
     fortran:
       require:
         - gcc
+    # Use the system OpenGL (apt libraries, declared external) instead of building
+    # spack's mesa. mesa is the sole consumer of llvm here, so this removes BOTH mesa
+    # AND llvm from the graph (a ~2.5 hr clang/lldb/lld/polly build). HEAT is headless
+    # (Dash web GUI + apt ParaView; no in-process GL rendering), so system GL suffices at
+    # runtime and only needs to link at build time. The builder apt-installs the GL dev
+    # libs (see docker/heat-builder.dockerfile). Verified: mesa/llvm drop out; vtk,
+    # freecad, gmsh still resolve.
+    opengl:
+      buildable: false
+      externals:
+        - spec: opengl@4.6
+          prefix: /usr
+    all:
+      providers:
+        gl: [opengl]
+        glx: [opengl]
+        egl: [opengl]
 
   concretizer:
     # when_possible (not true): freecad's old py-pyside2 caps py-pip@:23.0 while modern

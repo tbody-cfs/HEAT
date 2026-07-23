@@ -32,6 +32,16 @@ ENV SPACK_OCI_CACHE=${SPACK_OCI_CACHE} \
 # PATH for all subsequent RUN steps.
 ENV PATH=/opt/spack/bin:$PATH
 
+# System OpenGL dev libraries. spack.yaml declares `opengl` as an external at /usr and
+# uses it as the gl/glx/egl provider, so spack does NOT build mesa (and therefore does
+# NOT build llvm — mesa is llvm's only consumer here). These packages provide the GL
+# headers/libs that vtk/freecad/gmsh link against at build time. HEAT renders via the
+# Dash web GUI + apt ParaView (no in-process GL), so system GL is sufficient at runtime.
+RUN apt-get -yqq update && apt-get -yqq install --no-install-recommends \
+      libglvnd-dev libgl-dev libglx-dev libegl-dev mesa-common-dev libglu1-mesa-dev \
+      libx11-dev libxext-dev \
+ && rm -rf /var/lib/apt/lists/*
+
 # Install tree root (/opt/software) — the tree copied wholesale into the final image.
 COPY docker/spack/spack_config.yaml /root/.spack/config.yaml
 
