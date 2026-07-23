@@ -114,9 +114,14 @@ RUN case "$(uname -m)" in \
 # --autopush on the push-target mirror pushes each spec the MOMENT it finishes building
 # (continuous, not at-end), so a build that is killed or crashes partway — a long cold CI
 # run hitting the 360-min cap, a broken package, a cancelled job — still banks every
-# already-built spec to the cache and the next run resumes from there. The trailing
-# `buildcache push` is now just a catch-all + `--update-index` (autopush does not refresh
-# the index), so the mirror's index reflects all specs. The real install exit code is
+# already-built spec to the cache. BUT autopush does NOT refresh the buildcache index, and
+# spack needs that index to SEE/reuse cached specs. So a killed run leaves its banked specs
+# UNINDEXED, and the next run would rebuild them from source (verified locally: an unindexed
+# warm cache gave 0 reuse; indexing it first gave full reuse). We therefore `update-index`
+# in TWO places: BEFORE install, so specs banked by a prior/killed run are reusable THIS run
+# (this is what makes "resumes from there" actually true — cold first run indexes an empty
+# cache, a harmless no-op); AND after install via the trailing `buildcache push
+# --update-index`, the catch-all for a clean finish. The real install exit code is
 # re-propagated so CI still fails on a broken build.
 # NOTE: use the explicit `spack -e .` env flag on every command. `spack env activate .`
 # does not persist inside a non-interactive RUN (activation is a shell-function effect;
@@ -135,6 +140,7 @@ RUN --mount=type=secret,id=ghcr_token,required=false \
       { spack -e . mirror add --unsigned heat-oci "${SPACK_OCI_CACHE}" || true ; } && \
       PUSH_TARGET=local-cache ; \
     fi && \
+    { spack -e . buildcache update-index "${PUSH_TARGET}" || true ; } && \
     { spack -e . install ${SPACK_INSTALL_FLAGS} ; rc=$? ; \
       spack -e . buildcache push --unsigned --update-index --without-build-dependencies "${PUSH_TARGET}" || true ; \
       exit $rc ; }

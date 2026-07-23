@@ -105,8 +105,18 @@ esac
 spack -e . config add "packages:all:require:target=${HEAT_TARGET}"
 
 # Persistent host buildcache with --autopush: each spec is pushed the moment it builds,
-# so a killed/failed run still leaves every finished spec cached and reusable next time.
+# so a killed/failed run still leaves every finished spec on disk for next time.
 spack -e . mirror add --unsigned --autopush local-cache file:///spack-cache
+
+# Refresh the buildcache INDEX up front — this is what makes the line above's "reusable"
+# actually true. --autopush banks each spec's tarball+manifest but does NOT maintain the
+# index, and spack needs an index to SEE cached specs: without it a re-run reports
+# "no index found" and rebuilds everything from source (verified — an unindexed warm cache
+# gave 0 reuse; indexing it first gave full reuse). Cheap: reads the local manifests only.
+# On a cold first run the cache is empty and this is a harmless no-op.
+# (The Dockerfile has the same footgun — it only indexes at END, so a killed build leaves
+#  banked specs unindexed; see its NOTE. Keep the two in sync.)
+spack -e . buildcache update-index local-cache 2>/dev/null || true
 
 echo "===== CACHE STATE BEFORE INSTALL ====="
 spack -e . buildcache list --allarch local-cache 2>/dev/null | tail -8 || echo "(cache empty / first run)"
