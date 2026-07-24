@@ -1,0 +1,49 @@
+# pip-only Python packages for the spack-based image (docker/heat.dockerfile).
+# Installed into /opt/venv, a --system-site-packages venv over the spack view's
+# python 3.11 — so packages here bind to spack's compiled stack at runtime.
+#
+# This is docker/requirements.txt MINUS everything spack already provides
+# (see docker/spack/spack.yaml): numpy, scipy, pandas, matplotlib, h5py,
+# netCDF4, mpi4py, vtk. Do NOT re-add those: pip would fetch wheels that shadow
+# the spack builds — vtk in particular installs no dist-info from spack, so pip
+# cannot tell it is present and would always pull the (duplicate, self-contained)
+# wheel over the view's ABI-consistent build.
+PyFoam
+dash
+dash_html_components
+dash_core_components
+dash_bootstrap_components
+dash_bootstrap_templates
+visdcc
+flask
+plotly
+dash_table
+dash_extensions
+stl
+psutil
+trimesh
+pillow
+tk
+click
+# pip gmsh ships its own bundled gmsh binary + python API; the spack gmsh (no
+# +python) provides only the CLI app. HEAT's elmerClass imports gmsh in-process
+# at module level (engineClass -> elmerClass -> gmsh), so the wheel is required
+# for HEAT to boot at all.
+# KNOWN aarch64 GAP: gmsh publishes NO linux-aarch64 wheel (any version) — this
+# line fails there. Candidate fixes for an arm image: build spack gmsh +python
+# (serves both arches from the view) or make elmerClass import gmsh lazily.
+gmsh
+scikit-image
+scikit-learn
+# open3d >=0.19 ships no linux-aarch64 wheel; on arm pip resolves to 0.18.0 (the
+# last with one), so the two arches get DIFFERENT versions of a ray-tracing
+# dependency unless this is pinned. Left floating for x86 legacy parity — pin
+# ==0.18.0 instead if cross-arch reproducibility matters more.
+open3d
+mitsuba
+skorch
+# usd-core has never published a linux-aarch64 wheel (wheel-only project), so it
+# is x86-only. Safe to skip on arm: ioClass wraps the meshOpsClass import in
+# try/except — USD/GLTF export becomes unavailable, everything else runs.
+usd-core ; platform_machine == "x86_64"
+pygltflib

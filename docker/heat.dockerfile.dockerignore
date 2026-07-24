@@ -1,0 +1,7 @@
+# Per-Dockerfile ignore for docker/heat.dockerfile (BuildKit picks this up for
+# `docker build -f docker/heat.dockerfile .` only). Keeps `COPY . /root/source/HEAT`
+# from baking VCS history, machine-local config, and caches into the image.
+.git
+docker/.env
+**/__pycache__
+**/*.pyc
