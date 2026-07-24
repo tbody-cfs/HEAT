@@ -10,8 +10,12 @@ from pygltflib import (
 )
 from struct import pack
 import os
-from pxr import Usd, UsdGeom, Sdf, Vt, Gf
 import plotly.colors as pc
+# NB: pxr (usd-core) is imported lazily inside writeMeshUSD, NOT at module level. usd-core
+# publishes no linux-aarch64 wheel, so a top-level `from pxr import ...` would fail this whole
+# module's import on arm — taking pygltflib GLB export (writeMeshGLB) down with it, even though
+# pygltflib works fine there. Deferring the import keeps GLB export available on every arch;
+# only USD export (writeMeshUSD) requires pxr and will raise there if it is missing.
 
 class meshOps:
     def __init__(self):
@@ -263,6 +267,11 @@ class meshOps:
 
         Requires: pip install usd-core  (gives pxr.*) or a Python that ships with USD.
         """
+        # Lazy import (see the module-header note): pxr/usd-core is x86-only, so importing it
+        # here keeps meshOpsClass importable — and writeMeshGLB usable — on arm, where this
+        # call would raise ModuleNotFoundError only if USD export is actually attempted.
+        from pxr import Usd, UsdGeom, Sdf, Vt, Gf
+
         # ----------------------------
         # Build flattened vertices/indices and per-vertex scalars
         # ----------------------------

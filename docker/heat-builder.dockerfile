@@ -156,9 +156,54 @@ RUN bash /opt/spack-environment/scan-unguarded-simd.sh /opt/software
 RUN spack env activate --sh -d . > activate.sh
 
 # ======================================================================
-# Phase 2 (native source builds: M3DC1/fusion-io, MAFOT+CUDA, heatFoam,
-# swak4Foam) is appended below in a later step of the migration.
+# Phase 2 — MAFOT (native build against the spack view).
+# CRITICAL PATH: HEAT's optical-shadow field-line tracing runs `heatstructure`
+# (source/MHDClass.py), so the image is not functional for shadowed heat-flux runs
+# without it. Built here against /opt/views/view (openmpi + netcdf) and installed to
+# /root/source/MAFOT/build — OUTSIDE /opt/software, so the unguarded-SIMD gate above
+# (which scans /opt/software) does not see it; nvcc device code lives in .nv_fatbin,
+# not host-ISA sections, so MAFOT is portability-neutral regardless.
+#   2a MAFOT-CPU (default, BOTH arches): GPU=False, M3DC1=False — links only the view's
+#      openmpi + netcdf; no CUDA, no fusion-io/HDF5-C++ dep. Fully covers optical shadowing.
+#   2b GPU (x86 only; opt out with --build-arg HEAT_GPU=0): apt CUDA toolkit, GPU=True,
+#      cudart linked STATICALLY (runtime ships no CUDA), gencode sm_89 + compute_89 PTX.
+#   M3DC1=True (3D M3DC1 fields) is deferred: needs the M3DC1/fusion-io build first AND
+#      libhdf5_cpp, which the view's hdf5 (+mpi+fortran+hl, no +cxx) does not provide.
+# (M3DC1/fusion-io, heatFoam, swak4Foam remain later phase-2 steps.)
 # ======================================================================
+ARG HEAT_GPU=1
+ARG MAFOT_BRANCH_CACHE_BUST=1
+COPY docker/make.inc.HEAT.spack /opt/spack-environment/make.inc.HEAT.spack
+COPY docker/buildMAFOT.spack    /opt/spack-environment/buildMAFOT.spack
+
+# 2b: CUDA toolkit (x86_64 + HEAT_GPU=1 only), per the legacy docker/Dockerfile recipe.
+RUN if [ "${HEAT_GPU}" = "1" ] && [ "$(uname -m)" = "x86_64" ]; then \
+      apt-get -yqq update && apt-get -yqq install --no-install-recommends wget ca-certificates && \
+      wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb -O /tmp/cuda-keyring.deb && \
+      dpkg -i /tmp/cuda-keyring.deb && rm /tmp/cuda-keyring.deb && \
+      apt-get -yqq update && \
+      apt-get -yqq install --no-install-recommends cuda-nvcc-12-6 cuda-cudart-dev-12-6 && \
+      ln -sfn /usr/local/cuda-12.6 /usr/local/cuda && \
+      rm -rf /var/lib/apt/lists/* ; \
+    else \
+      echo "Skipping CUDA toolkit (HEAT_GPU=${HEAT_GPU}, arch=$(uname -m)) — MAFOT will be CPU-only." ; \
+    fi
+
+# Clone + build MAFOT against the spack view. build/{bin,lib} mirror the legacy layout so
+# the runtime COPY (heat.dockerfile) is a straight lift. GPU is decided from arch + HEAT_GPU;
+# M3DC1 stays False (deferred). The two `test -x` guards fail the build if the critical-path
+# binaries are missing.
+RUN git clone -b mafot_gpu --single-branch https://github.com/ORNL-Fusion/MAFOT.git /root/source/MAFOT && \
+    source /opt/spack-environment/activate.sh && \
+    if [ "${HEAT_GPU}" = "1" ] && [ "$(uname -m)" = "x86_64" ]; then MAFOT_GPU=True; else MAFOT_GPU=False; fi && \
+    echo "MAFOT build: GPU=${MAFOT_GPU} M3DC1=False arch=$(uname -m)" && \
+    cp /opt/spack-environment/make.inc.HEAT.spack /root/source/MAFOT/install/make.inc.HEAT && \
+    cp /opt/spack-environment/buildMAFOT.spack /root/source/MAFOT/buildMAFOT && \
+    chmod +x /root/source/MAFOT/buildMAFOT && \
+    mkdir -p /root/source/MAFOT/build/bin /root/source/MAFOT/build/lib && \
+    MAFOT_GPU="${MAFOT_GPU}" MAFOT_M3DC1=False /root/source/MAFOT/buildMAFOT && \
+    test -x /root/source/MAFOT/build/bin/heatstructure && \
+    test -x /root/source/MAFOT/build/bin/heatlaminar_mpi
 
 COPY docker/spack/entrypoint.sh /entrypoint.sh
 RUN chmod a+x /entrypoint.sh

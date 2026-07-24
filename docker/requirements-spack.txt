@@ -25,14 +25,16 @@ trimesh
 pillow
 tk
 click
-# pip gmsh ships its own bundled gmsh binary + python API; the spack gmsh (no
-# +python) provides only the CLI app. HEAT's elmerClass imports gmsh in-process
-# at module level (engineClass -> elmerClass -> gmsh), so the wheel is required
-# for HEAT to boot at all.
-# KNOWN aarch64 GAP: gmsh publishes NO linux-aarch64 wheel (any version) — this
-# line fails there. Candidate fixes for an arm image: build spack gmsh +python
-# (serves both arches from the view) or make elmerClass import gmsh lazily.
-gmsh
+# gmsh is deliberately NOT a pip package here. The spack gmsh (docker/spack/spack.yaml,
+# built +shared) already produces the Python SDK — lib/gmsh.py + libgmsh.so via the CMake
+# option ENABLE_BUILD_DYNAMIC, which +shared turns on (it is NOT gated on a `+python`
+# variant, which gmsh has none of — the source of the earlier "no python API" misread). The
+# entrypoint's activate.sh puts /opt/views/view/lib on PYTHONPATH, so HEAT's in-process
+# `import gmsh` (engineClass -> elmerClass) resolves to the spack copy on BOTH arches
+# (verified through /entrypoint.sh on x86_64 and aarch64). A pip gmsh would only shadow the
+# view copy — and it ships NO linux-aarch64 wheel — so dropping it removes the sole aarch64
+# blocker for free. NB: verify view-provided imports THROUGH /entrypoint.sh; a raw
+# `--entrypoint "" python3 -c "import gmsh"` fails because it lacks activate.sh's PYTHONPATH.
 scikit-image
 scikit-learn
 # open3d >=0.19 ships no linux-aarch64 wheel; on arm pip resolves to 0.18.0 (the

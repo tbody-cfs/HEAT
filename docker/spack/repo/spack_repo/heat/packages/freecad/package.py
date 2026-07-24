@@ -13,6 +13,10 @@
 #      find fails. (See the comment at that filter_file.)
 #   3. patch(): make SMESH's HDF5 pkg-config probe resolve spack's hdf5.pc, avoiding a
 #      poisoned find_package(HDF5) fallback. (See the comment at that filter_file.)
+#   4. patch(): rename FreeCAD's internal Ext/lazy_loader shim to freecad_lazyloader (+ rewrite
+#      its importers) so it stops shadowing the top-level `lazy_loader` name that PyPI
+#      lazy_loader (scikit-image) needs — a mutual collision since HEAT uses both FreeCAD's
+#      Draft (needs the shim) and skimage (needs PyPI). (See the comment at that block.)
 
 from spack_repo.builtin.build_systems.cmake import CMakePackage
 
@@ -64,6 +68,8 @@ class Freecad(CMakePackage):
     depends_on("yaml-cpp", when="@1.0:")  # HEAT overlay: 1.0's SetupLibYaml.cmake find_package(yaml-cpp)
 
     def patch(self):
+        import os
+
         filter_file(
             "# include <Standard_TooManyUsers.hxx>", "", "src/Mod/Part/App/OCCError.h", string=True
         )
@@ -120,6 +126,84 @@ class Freecad(CMakePackage):
                 "src/Mod/ReverseEngineering/App/SurfaceTriangulation.cpp",
                 string=True,
             )
+
+            # HEAT overlay: FreeCAD bundles an INTERNAL deferred-import shim at Ext/lazy_loader
+            # (a `LazyLoader` class; importers do `import lazy_loader.lazy_loader`), used across
+            # the Draft workbench + RemoteDebugger. It is UNRELATED to the PyPI `lazy_loader`
+            # (attach/attach_stub API) that scikit-image/-learn use, but squats the same
+            # top-level module name — and FreeCAD prepends Ext/ to sys.path on `import FreeCAD`.
+            # So after `import FreeCAD`, `from skimage import measure` dies with
+            # "module 'lazy_loader' has no attribute 'attach_stub'". HEAT hits BOTH in one
+            # process (CADClass imports FreeCAD and calls Draft.extrude; plotly2DEQ imports
+            # skimage.measure), and it is a true mutual collision under one name — a sys.path
+            # reorder only swaps which one breaks. Fix by NAMESPACE ISOLATION: rename FreeCAD's
+            # shim package to `freecad_lazyloader` and rewrite its importers, so the PyPI
+            # `lazy_loader` owns the top-level name (skimage works) while Draft uses the renamed
+            # shim (FreeCAD works). Done over the source tree, robust to the exact layout:
+            # locate the shim by its signature file, rewrite every .py importer, assert none
+            # remain. (Enumerated by arm+supervisor: ~25 Draft files + RemoteDebugger + the
+            # shim's own __init__.py; zero bare `import lazy_loader` forms.)
+            # Locate the shim package by its signature file (upstream: src/3rdParty/lazy_loader/
+            # lazy_loader.py) and rename the directory. NB the rename alone is NOT enough — the
+            # shim is wired into FreeCAD's CMake, which both references the source dir and pins
+            # the INSTALL name; those must move too or configure fails / the module reinstalls
+            # under the old name (re-shadowing). So we rewrite three reference classes and then
+            # assert none survive (a build-enforced completeness check across .py AND cmake).
+            shim_parent = None
+            for r, ds, _ in os.walk("src"):
+                if "lazy_loader" in ds and os.path.isfile(
+                    os.path.join(r, "lazy_loader", "lazy_loader.py")
+                ):
+                    shim_parent = r
+                    break
+            if shim_parent is None:
+                raise InstallError(
+                    "heat freecad overlay: could not locate the lazy_loader shim to rename"
+                )
+            os.rename(
+                os.path.join(shim_parent, "lazy_loader"),
+                os.path.join(shim_parent, "freecad_lazyloader"),
+            )
+
+            # (old-substring -> new-substring) across every source text file:
+            #   * py importers:          `import lazy_loader.lazy_loader`
+            #   * parent CMakeLists:     `add_subdirectory(lazy_loader)`  (else configure fails
+            #                             on the renamed dir)
+            #   * shim CMakeLists:       build-copy + `install(... DESTINATION "Ext/lazy_loader")`
+            #                             (else it reinstalls under the old Ext name)
+            renames = [
+                ("lazy_loader.lazy_loader", "freecad_lazyloader.lazy_loader"),
+                ("add_subdirectory(lazy_loader)", "add_subdirectory(freecad_lazyloader)"),
+                ("Ext/lazy_loader", "Ext/freecad_lazyloader"),
+            ]
+            text_files = []
+            for r, _, fs in os.walk("src"):
+                for f in fs:
+                    if f.endswith((".py", ".txt", ".cmake")):
+                        text_files.append(os.path.join(r, f))
+
+            def _reads(path):
+                with open(path, errors="ignore") as fh:
+                    return fh.read()
+
+            for old, new in renames:
+                hits = [p for p in text_files if old in _reads(p)]
+                if hits:
+                    filter_file(old, new, *hits, string=True)
+
+            # completeness: NO source text file may still reference the old shim name
+            # (this assert is what would have caught the CMake refs the first pass missed)
+            leftover = [
+                "%s: %s" % (p, old)
+                for old, _ in renames
+                for p in text_files
+                if old in _reads(p)
+            ]
+            if leftover:
+                raise InstallError(
+                    "heat freecad overlay: lazy_loader rename incomplete:\n"
+                    + "\n".join(leftover)
+                )
 
     def cmake_args(self):
         args = []

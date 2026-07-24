@@ -10,9 +10,12 @@
 # It contains no compilers and no build trees, so it is comparatively small and
 # fast to build: iterating on HEAT itself never re-runs spack.
 #
-# NOT YET INCLUDED (phase 2 of the migration, to be built in the builder):
-# MAFOT, M3DC1/fusion-io, heatFoam, swak4Foam. Workflows that invoke those
-# binaries (3D plasmas, openFOAM thermal solves) will fail in this image for now.
+# PHASE 2 status: MAFOT is now built in the builder (CPU on both arches; optional CUDA on
+# x86) and copied in below — so optical-shadow field-line tracing (heatstructure) works.
+# STILL NOT INCLUDED: M3DC1/fusion-io, heatFoam, swak4Foam. Workflows that invoke those
+# (3D M3DC1 fields, OpenFOAM thermal solves) will fail in this image for now.
+# NB: this Dockerfile now requires a PHASE-2 builder (one whose heat-builder.dockerfile
+# includes the MAFOT stage). Built against a pre-phase-2 builder, the MAFOT COPY below fails.
 #
 # Requires BuildKit (default in modern docker): per-Dockerfile .dockerignore,
 # --mount=type=bind, COPY --chmod.
@@ -39,6 +42,22 @@ ENV runMode=docker
 COPY --from=builder /opt/spack-environment /opt/spack-environment
 COPY --from=builder /opt/software /opt/software
 COPY --from=builder /opt/views /opt/views
+
+# MAFOT binaries (phase 2, built in the builder's phase-2 stage). HEAT calls `heatstructure`
+# (optical-shadow field-line tracing, CRITICAL PATH) and `mpirun -n N heatlaminar_mpi` by bare
+# name via $PATH (source/MHDClass.py). mpirun + the openmpi/netcdf shared libs come from the
+# spack view (COPYed above; the entrypoint's activate.sh puts them on PATH/LD_LIBRARY_PATH).
+# No CUDA packages are copied: cudart is statically linked into the binaries, so the GPU path
+# needs only the host driver injected by `docker run --gpus`.
+COPY --from=builder /root/source/MAFOT/build/bin /opt/mafot/bin
+COPY --from=builder /root/source/MAFOT/build/lib /opt/mafot/lib
+# LD_LIBRARY_PATH is unset in the base at this layer, so DON'T append ${LD_LIBRARY_PATH}
+# here — a trailing colon is an empty path element = the current directory (an injection
+# hazard). The entrypoint's activate.sh prepends the spack-view lib paths at runtime.
+ENV PATH="/opt/mafot/bin:${PATH}" \
+    LD_LIBRARY_PATH="/opt/mafot/lib"
+RUN test -x /opt/mafot/bin/heatstructure || \
+      { echo "ERROR: heatstructure missing from /opt/mafot/bin — MAFOT phase-2 build failed?" >&2; exit 1; }
 
 # apt runtime layer.
 #  * GL/X runtime libraries: the spack env declares opengl as an external at /usr

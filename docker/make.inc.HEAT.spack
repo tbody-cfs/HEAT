@@ -1,0 +1,62 @@
+# MAFOT build config for the HEAT SPACK builder image (docker/heat-builder.dockerfile).
+# ----------------------------------------------------------------------------------
+# This is MAFOT's install/make.inc.HEAT (from the mafot_gpu branch) adapted so the
+# scientific deps come from the spack VIEW at /opt/views/view instead of the apt
+# multiarch paths the legacy docker/Dockerfile used. Only the openmpi / netcdf / hdf5
+# path lines and NVCCFLAGS differ from upstream; everything else is verbatim.
+#
+# GPU and M3DC1 are selected on the `make` command line by docker/buildMAFOT.spack
+# (make CLI assignments override make.inc), so the values here are only fallbacks —
+# set to the safe Strategy-A defaults (CPU, no M3DC1). See heat-builder.dockerfile
+# and the MAFOT draft notes for why M3DC1=False is the default (heatstructure, the
+# optical-shadow critical path, needs neither M3DC1 nor the HDF5 C++ API; the view's
+# hdf5 is +mpi+fortran+hl WITHOUT +cxx, so -lhdf5_cpp is unavailable — M3DC1=True is a
+# separate phase-2 effort gated on resolving that).
+
+# ---- Folder ----
+MAFOT_DIR = /root/source/MAFOT
+BIN_DIR = /root/source/MAFOT/build/bin
+LIB_DIR = /root/source/MAFOT/build/lib
+
+# ---- Support codes (fallbacks; overridden by buildMAFOT.spack `make` args) ----
+M3DC1 = False
+VMEC = True
+SIESTA = False
+
+# ---- Compiler ----
+CXX = g++
+CFLAGS = -O3 -fPIC
+OMPFLAGS = -fopenmp -w
+F90 = gfortran
+F90FLAGS = -O3 -fPIC
+
+# ---- Linker ----
+ARCH = ar crus
+LDD = g++ --shared
+LDFLAGS =
+
+# ---- Additional Defines ----
+DEFS = -Dm3dc1_newfio
+
+# ---- external Libraries ----
+BLITZLIBS = -L/root/source/MAFOT/blitz++/blitz-0.9/lib -lblitz
+FLIBS = -lgfortran
+OMPLIBS = -L/opt/views/view/lib -lmpi
+M3DC1LIBS = -L/root/source/M3DC1/build/lib -lfusionio -lm3dc1
+HDF5LIBS = -L/opt/views/view/lib -lhdf5_cpp -lhdf5
+NETCDFLIBS = -L/opt/views/view/lib -lnetcdf
+
+# ---- external Includes ----
+BLITZINCLUDE = -I/root/source/MAFOT/blitz++/blitz-0.9/blitz
+OMPINCLUDE = -I/opt/views/view/include
+M3DC1INCLUDE = -I/root/source/M3DC1/build/include
+NETCDFINCLUDE = -I/opt/views/view/include
+
+# ---- GPU / CUDA support (fallback; overridden by buildMAFOT.spack) ----
+# cudart is linked STATICALLY (MAFOT makefile uses -lcudart_static) so the runtime
+# image ships no CUDA packages. gencode targets the L40S/Ada fleet: sm_89 native SASS
+# + compute_89 PTX fallback.
+GPU = False
+CUDA_PATH = /usr/local/cuda
+NVCC = $(CUDA_PATH)/bin/nvcc
+NVCCFLAGS = -O3 -std=c++14 -gencode arch=compute_89,code=sm_89 -gencode arch=compute_89,code=compute_89
