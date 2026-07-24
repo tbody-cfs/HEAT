@@ -17,7 +17,7 @@ spack:
     # --- toolchain / core numerics ---
     - cmake
     - openmpi
-    - hdf5 +mpi +fortran +hl
+    - hdf5 +mpi +fortran +hl   # +hl is load-bearing: FreeCAD's SMESH links libhdf5_hl (see freecad overlay patch())
     - netcdf-c +mpi
     - netcdf-fortran
     - netcdf-cxx4
@@ -193,11 +193,8 @@ spack:
   view: /opt/views/view
 
   # Custom repo overlay (namespace: heat) carrying local package fixes for spack 1.2.2
-  # builtin packages that are broken for this stack. Currently: py-pivy — its patch()
-  # enables C in CMake (removes `project(... NONE)`) but the builtin package only
-  # `depends_on("cxx")`, so the C compiler wrapper is never set up (SPACK_CC_* unset) and
-  # the build dies with a misleading "coin was not found". The overlay adds
-  # `depends_on("c", type="build")`. The builder COPYs docker/spack/repo to this path.
-  # See SPACK_MIGRATION_PROGRESS.md §4 (py-pivy).
+  # builtin packages that are broken for this stack — currently py-pivy, freecad, elmerfem, pcl.
+  # Each overlay package.py's header documents its delta vs the builtin package. The builder
+  # COPYs docker/spack/repo to this path.
   repos:
     - /opt/spack-environment/repo/spack_repo/heat

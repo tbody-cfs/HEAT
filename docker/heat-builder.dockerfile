@@ -81,7 +81,7 @@ RUN spack mirror add --scope site spack-binaries https://binaries.spack.io/devel
 # The HEAT spack environment.
 RUN mkdir -p /opt/spack-environment
 COPY docker/spack/spack.yaml /opt/spack-environment/spack.yaml
-# Custom repo overlay (namespace: heat) with local package fixes (py-pivy C-dep); the
+# Custom repo overlay (namespace: heat) with local package fixes; the
 # env's spack.yaml references it via `repos: [/opt/spack-environment/repo/spack_repo/heat]`.
 COPY docker/spack/repo /opt/spack-environment/repo
 WORKDIR /opt/spack-environment

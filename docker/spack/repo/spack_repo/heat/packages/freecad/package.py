@@ -1,16 +1,18 @@
 # HEAT overlay of the spack builtin freecad (spack 1.2.2).
 #
-# The only change vs builtin is the added `depends_on("yaml-cpp", when="@1.0:")`.
-# FreeCAD 1.0's cMake/FreeCAD_Helpers/SetupLibYaml.cmake does `find_package(yaml-cpp ...)`
-# (CONFIG mode), but the builtin package — which also supports 0.20.2, predating that
-# requirement — never declares yaml-cpp. So yaml-cpp is not in freecad's dependency closure
-# and not on its CMAKE_PREFIX_PATH, and the build fails at configure with:
-#   CMake Error at cMake/FreeCAD_Helpers/SetupLibYaml.cmake:3 (find_package):
-#     Could not find a package configuration file provided by "yaml-cpp"
-# (yaml-cpp@0.8.0 happens to be in the env already, pulled by adios2/mgard, but that's a
-# sibling subtree so freecad's build can't see it.) Declaring the dep puts yaml-cpp on
-# freecad's prefix path so find_package resolves. Guarded @1.0: so 0.20.2 is unaffected.
-# See SPACK_MIGRATION_PROGRESS.md.
+# Changes vs builtin, all guarded @1.0: (0.20.2 is untouched):
+#   1. depends_on("yaml-cpp"): 1.0's cMake/FreeCAD_Helpers/SetupLibYaml.cmake does
+#      find_package(yaml-cpp) (CONFIG mode), but the builtin package — which also supports
+#      0.20.2, predating that requirement — never declares the dep, so yaml-cpp is absent from
+#      freecad's CMAKE_PREFIX_PATH and configure fails:
+#        CMake Error at cMake/FreeCAD_Helpers/SetupLibYaml.cmake:3 (find_package):
+#          Could not find a package configuration file provided by "yaml-cpp"
+#      Declaring the dep puts yaml-cpp on freecad's prefix path so find_package resolves.
+#   2. patch(): drop the header-only boost `system` component from SetupBoost.cmake — Boost
+#      1.89 ships no compiled boost_system and no boost_system CMake config, so the REQUIRED
+#      find fails. (See the comment at that filter_file.)
+#   3. patch(): make SMESH's HDF5 pkg-config probe resolve spack's hdf5.pc, avoiding a
+#      poisoned find_package(HDF5) fallback. (See the comment at that filter_file.)
 
 from spack_repo.builtin.build_systems.cmake import CMakePackage
 
@@ -67,6 +69,57 @@ class Freecad(CMakePackage):
         )
         filter_file('putenv("PYTHONPATH=");', "", "src/Main/MainGui.cpp", string=True)
         filter_file('_putenv("PYTHONPATH=");', "", "src/Main/MainGui.cpp", string=True)
+
+        if self.spec.satisfies("@1.0:"):
+            # HEAT overlay: Boost 1.89 made Boost.System header-only — there is no compiled
+            # boost_system library and no `boost_system` CMake component config. FreeCAD 1.0's
+            # SetupBoost.cmake still lists `system` in find_package(Boost COMPONENTS ... REQUIRED),
+            # so configure dies: "Could not find a package configuration file provided by
+            # boost_system". Drop the header-only `system` component (its symbols come in via the
+            # Boost headers / Boost::filesystem, which is still a compiled component here).
+            filter_file(
+                "BOOST_COMPONENTS filesystem program_options regex system thread date_time",
+                "BOOST_COMPONENTS filesystem program_options regex thread date_time",
+                "cMake/FreeCAD_Helpers/SetupBoost.cmake",
+                string=True,
+            )
+
+            # HEAT overlay: SMESH's HDF5 discovery collides with spack's hdf5. Our med is MPI, so
+            # SetupSalomeSMESH.cmake sets HDF5_VARIANT=hdf5-openmpi and does
+            # `pkg_search_module(HDF5 ${HDF5_VARIANT})` (line 98). Spack ships hdf5.pc / hdf5_hl.pc,
+            # never the Debian-named hdf5-openmpi.pc, so that probe FAILS — which both leaves junk in
+            # the shared HDF5_* variable namespace and forces the else path `find_package(HDF5 REQUIRED)`
+            # (line 100). That find then aborts configure with
+            #   Could NOT find HDF5 (missing: HDF5_HL_LIBRARIES) (found version "1.14.6")
+            # even though libhdf5_hl.so is present (pure detection breakage — NOT a missing +hl; hdf5
+            # is already +hl). Fix: add plain `hdf5` to the pkg_search module list. spack puts hdf5.pc
+            # on PKG_CONFIG_PATH in freecad's build env, so the probe succeeds, HDF5_FOUND goes true,
+            # and SMESH takes its clean pkg-config else-branch (add_compile_options / link_libraries /
+            # find_file(hdf5.h)), never reaching the poisoned find_package. Root cause reproduced
+            # and the fix verified with a standalone find_package(HDF5 ... COMPONENTS C HL) CMake
+            # repro against the spack hdf5 prefix.
+            #
+            # NB: hdf5 +hl (see spack.yaml) is REQUIRED, not incidental — once this probe succeeds,
+            # libSMESH.so links libhdf5_hl.so directly (HL is populated at detection). Dropping +hl
+            # in a future slimming pass would break the SMESH link. Keep +hl.
+            filter_file(
+                "pkg_search_module(HDF5 ${HDF5_VARIANT})",
+                "pkg_search_module(HDF5 ${HDF5_VARIANT} hdf5)",
+                "cMake/FreeCAD_Helpers/SetupSalomeSMESH.cmake",
+                string=True,
+            )
+
+            # PCL >= 1.12 removed pcl/point_traits.h (its contents moved to pcl/type_traits.h
+            # in 1.11). FreeCAD 1.0's SurfaceTriangulation.cpp still includes the old header, so
+            # the build fails at compile with "fatal error: pcl/point_traits.h: No such file or
+            # directory". Swap it for the replacement — the same one-line fix FreeCAD applied
+            # upstream after 1.0. This is the only file in the tree with the old include.
+            filter_file(
+                "#include <pcl/point_traits.h>",
+                "#include <pcl/type_traits.h>",
+                "src/Mod/ReverseEngineering/App/SurfaceTriangulation.cpp",
+                string=True,
+            )
 
     def cmake_args(self):
         args = []
