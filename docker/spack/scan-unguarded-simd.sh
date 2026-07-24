@@ -48,7 +48,14 @@ ARCH="$(uname -m)"
 #                cpuid at init; SVE/AVX-512 absent from the baseline kernel. NB those uarch
 #                names (SKYLAKEX ≠ _skx) don't match DISP_RE, so the allowlist — not the name
 #                heuristic — is what covers openblas.
-ALLOW_RE='(^|/)(gcc-runtime|openmpi|intel-oneapi|llvm|openssl|py-numpy|zlib-ng|openblas)-'
+#   isa-l        Intel ISA-L "multibinary" dispatch (cpuid-driven fn-ptr init, NOT ifunc):
+#                each API func (crc32_gzip_refl, …) is a stub that jmps through a *_dispatched
+#                pointer set by *_dispatch_init (82 cpuid probes, 0 IFUNC syms). AVX-512 lives
+#                in *_by16_10 VPCLMULQDQ kernels + local nasm labels (.next_vect/._by_64) whose
+#                names don't match DISP_RE. aarch64 has real SVE kernels but all *_sve-named
+#                (already dispatch-matched), so the add is harmless there — it just removes the
+#                gate's reliance on that lucky name-match.
+ALLOW_RE='(^|/)(gcc-runtime|openmpi|intel-oneapi|llvm|openssl|py-numpy|zlib-ng|openblas|isa-l)-'
 
 # CRITICAL: VEC_RE is passed to `objdump | awk -v vec=…`, and awk's -v processes C escape
 # sequences in the value — so a `\b` word-boundary becomes a literal BACKSPACE (0x08) and
