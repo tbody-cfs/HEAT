@@ -137,5 +137,13 @@ if [ "$rc" -ne 0 ]; then
   done
   echo "===== END FAILED LOGS ====="
 fi
+# Portability regression gate — advisory here (dev harness); a HARD gate in
+# heat-builder.dockerfile. Flags any installed lib with unguarded post-baseline SIMD
+# (a -march=native leak past the portable target). See scan-unguarded-simd.sh.
+if [ "$rc" -eq 0 ]; then
+  echo "===== PORTABILITY SIMD GATE ====="
+  bash /host/scan-unguarded-simd.sh /opt/software \
+    || echo ">> WARNING: unguarded-SIMD gate FAILED (above) — this WOULD fail the CI image build."
+fi
 echo "===== HEAT LOCAL BUILD COMPLETE rc=$rc ====="
 exit $rc

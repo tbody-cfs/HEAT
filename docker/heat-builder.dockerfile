@@ -145,6 +145,13 @@ RUN --mount=type=secret,id=ghcr_token,required=false \
       spack -e . buildcache push --unsigned --update-index --without-build-dependencies "${PUSH_TARGET}" || true ; \
       exit $rc ; }
 
+# Portability regression gate: fail the image build if any installed library carries
+# unguarded post-baseline SIMD (an -march=native / -mcpu=native leak past the portable
+# target x86_64_v3 / aarch64) — e.g. a package baking -march=native into its objects or
+# its exported CMake flags. See the script header for the detection method + allowlist.
+COPY docker/spack/scan-unguarded-simd.sh /opt/spack-environment/scan-unguarded-simd.sh
+RUN bash /opt/spack-environment/scan-unguarded-simd.sh /opt/software
+
 # Generate the environment activation script the final image / entrypoint sources.
 RUN spack env activate --sh -d . > activate.sh
 
